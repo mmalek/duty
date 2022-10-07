@@ -63,12 +63,12 @@ mod tests {
     use std::sync::Barrier;
 
     trait CalcService {
-        fn add(&self, a: u32, b: u32) -> u32;
+        fn add(&self, a: i32, b: i32) -> i32;
     }
 
     #[derive(Serialize, Deserialize)]
     enum CalcMessage {
-        Add { a: u32, b: u32 },
+        Add { a: i32, b: i32 },
     }
 
     struct CallStream<'s> {
@@ -125,7 +125,7 @@ mod tests {
     }
 
     impl CalcService for CalcServiceServer {
-        fn add(&self, a: u32, b: u32) -> u32 {
+        fn add(&self, a: i32, b: i32) -> i32 {
             a + b
         }
     }
@@ -142,7 +142,7 @@ mod tests {
     }
 
     impl CalcService for CalcServiceClient {
-        fn add(&self, a: u32, b: u32) -> u32 {
+        fn add(&self, a: i32, b: i32) -> i32 {
             self.stream
                 .borrow()
                 .send(&CalcMessage::Add { a, b })
@@ -175,7 +175,7 @@ mod tests {
             assert_eq!(service.add(2, 3), 5);
             assert_eq!(service.add(38, 78), 116);
             assert_eq!(service.add(42, 115), 157);
-            assert_eq!(service.add(115, 42), 157);
+            assert_eq!(service.add(115, -42), 73);
             assert_eq!(service.add(987, 13), 1000);
 
             Ok(())
