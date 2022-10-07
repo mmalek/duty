@@ -64,11 +64,13 @@ mod tests {
 
     trait CalcService {
         fn add(&self, a: i32, b: i32) -> i32;
+        fn mul(&self, a: i32, b: i32) -> i32;
     }
 
     #[derive(Serialize, Deserialize)]
     enum CalcMessage {
         Add { a: i32, b: i32 },
+        Mul { a: i32, b: i32 },
     }
 
     struct CallStream<'s> {
@@ -91,10 +93,8 @@ mod tests {
 
         fn dispatch(&self, message: CalcMessage) -> Result<(), Error> {
             match message {
-                CalcMessage::Add { a, b } => {
-                    let res = self.server.add(a, b);
-                    self.stream.send(&res)
-                }
+                CalcMessage::Add { a, b } => self.stream.send(&self.server.add(a, b)),
+                CalcMessage::Mul { a, b } => self.stream.send(&self.server.mul(a, b)),
             }
         }
     }
@@ -128,6 +128,10 @@ mod tests {
         fn add(&self, a: i32, b: i32) -> i32 {
             a + b
         }
+
+        fn mul(&self, a: i32, b: i32) -> i32 {
+            a * b
+        }
     }
 
     struct CalcServiceClient {
@@ -146,6 +150,17 @@ mod tests {
             self.stream
                 .borrow()
                 .send(&CalcMessage::Add { a, b })
+                .expect("Sending message error");
+            self.stream
+                .borrow_mut()
+                .receive()
+                .expect("Receiving message error")
+        }
+
+        fn mul(&self, a: i32, b: i32) -> i32 {
+            self.stream
+                .borrow()
+                .send(&CalcMessage::Mul { a, b })
                 .expect("Sending message error");
             self.stream
                 .borrow_mut()
@@ -174,7 +189,7 @@ mod tests {
             let service = CalcServiceClient::new(&ADDR)?;
             assert_eq!(service.add(2, 3), 5);
             assert_eq!(service.add(38, 78), 116);
-            assert_eq!(service.add(42, 115), 157);
+            assert_eq!(service.mul(42, 5), 210);
             assert_eq!(service.add(115, -42), 73);
             assert_eq!(service.add(987, 13), 1000);
 
