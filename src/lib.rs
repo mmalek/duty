@@ -59,47 +59,72 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
     use std::cell::RefCell;
+    use std::marker::PhantomData;
     use std::net::{TcpListener, ToSocketAddrs};
+    use std::ops::{Add, Mul};
     use std::sync::Barrier;
 
-    trait CalcService {
-        fn add(&self, a: i32, b: i32) -> i32;
-        fn mul(&self, a: i32, b: i32) -> i32;
+    trait CalcService<T: Add + Mul> {
+        fn add(&self, a: T, b: T) -> <T as Add>::Output;
+        fn mul(&self, a: T, b: T) -> <T as Mul>::Output;
     }
 
     #[derive(Serialize, Deserialize)]
-    enum CalcMessage {
-        Add { a: i32, b: i32 },
-        Mul { a: i32, b: i32 },
+    enum CalcMessage<T>
+    {
+        Add { a: T, b: T },
+        Mul { a: T, b: T },
     }
 
-    struct CallStream<'s> {
+    impl<T> CalcMessage<T>
+    where
+        T: Add + Mul + Serialize + DeserializeOwned,
+        <T as Add>::Output: Serialize,
+        <T as Mul>::Output: Serialize,
+    {
+    }
+
+    struct CallStream<'s, T: Add + Mul> {
         server: &'s CalcServiceServer,
         stream: DataStream,
+        phantom: PhantomData<T>,
     }
 
-    impl<'s> CallStream<'s> {
-        fn new(server: &'s CalcServiceServer, stream: TcpStream) -> CallStream {
+    impl<'s, T> CallStream<'s, T>
+    where
+        T: Add + Mul + Serialize + DeserializeOwned,
+        <T as Add>::Output: Serialize,
+        <T as Mul>::Output: Serialize,
+    {
+        fn new(server: &'s CalcServiceServer, stream: TcpStream) -> CallStream<T> {
             CallStream {
                 server,
                 stream: DataStream::new(stream),
+                phantom: PhantomData,
             }
         }
 
         fn next_call(&mut self) -> Result<(), Error> {
-            let message = self.stream.receive()?;
+            let message: CalcMessage<T> = self.stream.receive()?;
             self.dispatch(message)
         }
 
-        fn dispatch(&self, message: CalcMessage) -> Result<(), Error> {
+        fn dispatch(&self, message: CalcMessage<T>) -> Result<(), Error> {
             match message {
-                CalcMessage::Add { a, b } => self.stream.send(&self.server.add(a, b)),
+                CalcMessage::Add { a, b } => {
+                    self.stream.send(&CalcService::<T>::add(self.server, a, b))
+                }
                 CalcMessage::Mul { a, b } => self.stream.send(&self.server.mul(a, b)),
             }
         }
     }
 
-    impl<'s> Iterator for CallStream<'s> {
+    impl<'s, T> Iterator for CallStream<'s, T>
+    where
+        T: Add + Mul + Serialize + DeserializeOwned,
+        <T as Add>::Output: Serialize,
+        <T as Mul>::Output: Serialize,
+    {
         type Item = Result<(), Error>;
         fn next(&mut self) -> Option<Self::Item> {
             Some(self.next_call())
@@ -116,7 +141,12 @@ mod tests {
             Ok(CalcServiceServer { listener })
         }
 
-        fn connections(&self) -> impl Iterator<Item = Result<CallStream, Error>> {
+        fn connections<T>(&self) -> impl Iterator<Item = Result<CallStream<T>, Error>>
+        where
+            T: Add + Mul + Serialize + DeserializeOwned,
+            <T as Add>::Output: Serialize,
+            <T as Mul>::Output: Serialize,
+        {
             self.listener
                 .incoming()
                 .map(|stream| stream.map_err(Error::IncomingConnectionError))
@@ -124,12 +154,12 @@ mod tests {
         }
     }
 
-    impl CalcService for CalcServiceServer {
-        fn add(&self, a: i32, b: i32) -> i32 {
+    impl<T: Add + Mul> CalcService<T> for CalcServiceServer {
+        fn add(&self, a: T, b: T) -> <T as Add>::Output {
             a + b
         }
 
-        fn mul(&self, a: i32, b: i32) -> i32 {
+        fn mul(&self, a: T, b: T) -> <T as Mul>::Output {
             a * b
         }
     }
@@ -145,8 +175,13 @@ mod tests {
         }
     }
 
-    impl CalcService for CalcServiceClient {
-        fn add(&self, a: i32, b: i32) -> i32 {
+    impl<T> CalcService<T> for CalcServiceClient
+    where
+        T: Add + Mul + Serialize + DeserializeOwned,
+        <T as Add>::Output: Serialize + DeserializeOwned,
+        <T as Mul>::Output: Serialize + DeserializeOwned,
+    {
+        fn add(&self, a: T, b: T) -> <T as Add>::Output {
             self.stream
                 .borrow()
                 .send(&CalcMessage::Add { a, b })
@@ -157,7 +192,7 @@ mod tests {
                 .expect("Receiving message error")
         }
 
-        fn mul(&self, a: i32, b: i32) -> i32 {
+        fn mul(&self, a: T, b: T) -> <T as Mul>::Output {
             self.stream
                 .borrow()
                 .send(&CalcMessage::Mul { a, b })
@@ -180,7 +215,7 @@ mod tests {
                 let service = CalcServiceServer::new(&ADDR)?;
                 start.wait();
                 let mut connections = service.connections();
-                let requests = connections.next().unwrap()?;
+                let requests: CallStream<i32> = connections.next().unwrap()?;
                 requests.take(5).collect::<Result<(), Error>>()
             });
 
