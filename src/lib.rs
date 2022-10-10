@@ -70,8 +70,7 @@ mod tests {
     }
 
     #[derive(Serialize, Deserialize)]
-    enum CalcMessage<T>
-    {
+    enum CalcMessage<T> {
         Add { a: T, b: T },
         Mul { a: T, b: T },
     }
@@ -111,9 +110,7 @@ mod tests {
 
         fn dispatch(&self, message: CalcMessage<T>) -> Result<(), Error> {
             match message {
-                CalcMessage::Add { a, b } => {
-                    self.stream.send(&CalcService::<T>::add(self.server, a, b))
-                }
+                CalcMessage::Add { a, b } => self.stream.send(&self.server.add(a, b)),
                 CalcMessage::Mul { a, b } => self.stream.send(&self.server.mul(a, b)),
             }
         }
