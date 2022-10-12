@@ -1,6 +1,8 @@
 pub mod error;
 
-use crate::error::Error;
+pub use duty_attrs::service;
+pub use crate::error::Error;
+
 use serde::{de::DeserializeOwned, Serialize};
 use std::io::Read;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -202,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn loopback() -> Result<(), Error> {
+    fn loopback_generic() -> Result<(), Error> {
         const ADDR: &str = "127.0.0.1:34563";
 
         let start = Barrier::new(2);
