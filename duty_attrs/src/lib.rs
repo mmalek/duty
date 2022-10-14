@@ -10,23 +10,23 @@ use syn::{
 #[proc_macro_attribute]
 pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
     let service_trait = parse_macro_input!(item as ItemTrait);
-    let service_trait_ident = &service_trait.ident;
+    let service_trait_ident = service_trait.ident.clone();
     let client_struct_ident = Ident::new(
         &format!("{}Client", service_trait_ident),
         service_trait_ident.span(),
     );
-    let msg_enum_ident = Ident::new(
-        &format!("{}Msg", service_trait_ident),
+    let req_enum_ident = Ident::new(
+        &format!("{}Request", service_trait_ident),
         service_trait_ident.span(),
     );
 
-    let msg_enum = ItemEnum {
+    let req_enum = ItemEnum {
         attrs: Vec::new(),
         vis: service_trait.vis.clone(),
         enum_token: token::Enum {
             span: service_trait_ident.span(),
         },
-        ident: msg_enum_ident.clone(),
+        ident: req_enum_ident.clone(),
         generics: service_trait.generics.clone(),
         brace_token: token::Brace {
             span: service_trait_ident.span(),
@@ -58,11 +58,11 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let methods: Vec<ImplItemMethod> = trait_methods(&service_trait)
-        .zip(msg_enum.variants.iter())
+        .zip(req_enum.variants.iter())
         .map(|(method, variant)| -> ImplItemMethod {
-            let msg_inst = ExprStruct {
+            let req_inst = ExprStruct {
                 attrs: Vec::new(),
-                path: enum_variant_to_path(&msg_enum_ident, &variant.ident),
+                path: enum_variant_to_path(&req_enum_ident, &variant.ident),
                 brace_token: token::Brace {
                     span: service_trait_ident.span(),
                 },
@@ -84,13 +84,9 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
             let body = quote! {
                 {
                     self.stream
-                        .borrow()
-                        .send(&#msg_inst)
-                        .expect("Sending message error");
-                    self.stream
                         .borrow_mut()
-                        .receive()
-                        .expect("Receiving message error")
+                        .send_receive(&#req_inst)
+                        .expect("Communication error")
                 }
             };
 
@@ -107,6 +103,8 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
             }
         })
         .collect();
+
+    let service_trait = add_methods_to_service_trait(service_trait, &req_enum);
 
     let result = quote!(
         #service_trait
@@ -125,7 +123,7 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         #[derive(serde::Serialize, serde::Deserialize)]
-        #msg_enum
+        #req_enum
 
         impl #service_trait_ident for #client_struct_ident {
             #(
@@ -137,6 +135,43 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
     // eprintln!("OUTPUT: {}", result);
 
     result.into()
+}
+
+fn add_methods_to_service_trait(mut service_trait: ItemTrait, req_enum: &ItemEnum) -> ItemTrait {
+    let methods: Vec<&Ident> = trait_methods(&service_trait)
+        .map(|method| &method.sig.ident)
+        .collect();
+    let args: Vec<Vec<&PatIdent>> = trait_methods(&service_trait)
+        .map(|method| method_input_args(method).map(|(_, arg)| arg).collect())
+        .collect();
+
+    let req_enum_name = &req_enum.ident;
+    let req_enum_variants: Vec<&Ident> = req_enum
+        .variants
+        .iter()
+        .map(|variant| &variant.ident)
+        .collect();
+
+    let handle_next_request_method = quote! {
+        fn handle_next_request(&self, stream: &mut duty::DataStream) -> Result<(), Error> {
+            let request: #req_enum_name = stream.receive()?;
+            match request {
+                #(
+                    #req_enum_name::#req_enum_variants { #( #args ),* } => stream.send(&self.#methods(#( #args ),*)),
+                )*
+            }
+        }
+    };
+
+    let handle_next_request_method = parse(handle_next_request_method.into()).expect(&format!(
+        "Cannot parse handle_next_request method definition"
+    ));
+
+    service_trait
+        .items
+        .push(TraitItem::Method(handle_next_request_method));
+
+    service_trait
 }
 
 fn trait_methods(item_trait: &ItemTrait) -> impl Iterator<Item = &TraitItemMethod> {
@@ -168,15 +203,4 @@ fn enum_variant_to_path(enum_ident: &Ident, variant_ident: &Ident) -> syn::Path 
 fn ident_to_path(ident: &Ident) -> syn::Path {
     syn::parse_str::<syn::Path>(&ident.to_string())
         .expect(&format!("Cannot create path out of '{ident}' identifier"))
-}
-
-#[cfg(test)]
-mod tests {
-    // use super::*;
-
-    // #[test]
-    // fn it_works() {
-    //     let result = add(2, 2);
-    //     assert_eq!(result, 4);
-    // }
 }

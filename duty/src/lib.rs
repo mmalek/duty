@@ -1,7 +1,7 @@
 pub mod error;
 
-pub use duty_attrs::service;
 pub use crate::error::Error;
+pub use duty_attrs::service;
 
 use serde::{de::DeserializeOwned, Serialize};
 use std::io::Read;
@@ -54,6 +54,14 @@ impl DataStream {
         bincode::serialize_into(&self.stream, &size).map_err(Error::MsgHeaderSerFailed)?;
         bincode::serialize_into(&self.stream, &data).map_err(Error::MsgHeaderSerFailed)
     }
+
+    pub fn send_receive<In: Serialize, Out: DeserializeOwned>(
+        &mut self,
+        input: &In,
+    ) -> Result<Out, Error> {
+        self.send(input)?;
+        self.receive()
+    }
 }
 
 #[cfg(test)]
@@ -61,14 +69,26 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
     use std::cell::RefCell;
-    use std::marker::PhantomData;
     use std::net::{TcpListener, ToSocketAddrs};
     use std::ops::{Add, Mul};
     use std::sync::Barrier;
 
-    trait CalcService<T: Add + Mul> {
+    trait CalcService<T>
+    where
+        T: Add + Mul + Serialize + DeserializeOwned,
+        <T as Add>::Output: Serialize,
+        <T as Mul>::Output: Serialize,
+    {
         fn add(&self, a: T, b: T) -> <T as Add>::Output;
         fn mul(&self, a: T, b: T) -> <T as Mul>::Output;
+
+        fn handle_next_request(&self, stream: &mut DataStream) -> Result<(), Error> {
+            let request: CalcMessage<T> = stream.receive()?;
+            match request {
+                CalcMessage::Add { a, b } => stream.send(&self.add(a, b)),
+                CalcMessage::Mul { a, b } => stream.send(&self.mul(a, b)),
+            }
+        }
     }
 
     #[derive(Serialize, Deserialize)]
@@ -85,75 +105,14 @@ mod tests {
     {
     }
 
-    struct CallStream<'s, T: Add + Mul> {
-        server: &'s CalcServiceServer,
-        stream: DataStream,
-        phantom: PhantomData<T>,
-    }
+    struct CalcServiceServer;
 
-    impl<'s, T> CallStream<'s, T>
+    impl<T> CalcService<T> for CalcServiceServer
     where
         T: Add + Mul + Serialize + DeserializeOwned,
         <T as Add>::Output: Serialize,
         <T as Mul>::Output: Serialize,
     {
-        fn new(server: &'s CalcServiceServer, stream: TcpStream) -> CallStream<T> {
-            CallStream {
-                server,
-                stream: DataStream::new(stream),
-                phantom: PhantomData,
-            }
-        }
-
-        fn next_call(&mut self) -> Result<(), Error> {
-            let message: CalcMessage<T> = self.stream.receive()?;
-            self.dispatch(message)
-        }
-
-        fn dispatch(&self, message: CalcMessage<T>) -> Result<(), Error> {
-            match message {
-                CalcMessage::Add { a, b } => self.stream.send(&self.server.add(a, b)),
-                CalcMessage::Mul { a, b } => self.stream.send(&self.server.mul(a, b)),
-            }
-        }
-    }
-
-    impl<'s, T> Iterator for CallStream<'s, T>
-    where
-        T: Add + Mul + Serialize + DeserializeOwned,
-        <T as Add>::Output: Serialize,
-        <T as Mul>::Output: Serialize,
-    {
-        type Item = Result<(), Error>;
-        fn next(&mut self) -> Option<Self::Item> {
-            Some(self.next_call())
-        }
-    }
-
-    struct CalcServiceServer {
-        listener: TcpListener,
-    }
-
-    impl CalcServiceServer {
-        fn new<A: ToSocketAddrs>(addr: A) -> Result<CalcServiceServer, Error> {
-            let listener = TcpListener::bind(addr).map_err(Error::ServerFailedToStart)?;
-            Ok(CalcServiceServer { listener })
-        }
-
-        fn connections<T>(&self) -> impl Iterator<Item = Result<CallStream<T>, Error>>
-        where
-            T: Add + Mul + Serialize + DeserializeOwned,
-            <T as Add>::Output: Serialize,
-            <T as Mul>::Output: Serialize,
-        {
-            self.listener
-                .incoming()
-                .map(|stream| stream.map_err(Error::IncomingConnectionError))
-                .map(|stream| stream.map(|stream| CallStream::new(self, stream)))
-        }
-    }
-
-    impl<T: Add + Mul> CalcService<T> for CalcServiceServer {
         fn add(&self, a: T, b: T) -> <T as Add>::Output {
             a + b
         }
@@ -182,24 +141,16 @@ mod tests {
     {
         fn add(&self, a: T, b: T) -> <T as Add>::Output {
             self.stream
-                .borrow()
-                .send(&CalcMessage::Add { a, b })
-                .expect("Sending message error");
-            self.stream
                 .borrow_mut()
-                .receive()
-                .expect("Receiving message error")
+                .send_receive(&CalcMessage::Add { a, b })
+                .expect("Communication error")
         }
 
         fn mul(&self, a: T, b: T) -> <T as Mul>::Output {
             self.stream
-                .borrow()
-                .send(&CalcMessage::Mul { a, b })
-                .expect("Sending message error");
-            self.stream
                 .borrow_mut()
-                .receive()
-                .expect("Receiving message error")
+                .send_receive(&CalcMessage::Mul { a, b })
+                .expect("Communication error")
         }
     }
 
@@ -210,12 +161,22 @@ mod tests {
         let start = Barrier::new(2);
 
         std::thread::scope(|s| {
-            s.spawn(|| {
-                let service = CalcServiceServer::new(&ADDR)?;
+            s.spawn(|| -> Result<(), Error> {
+                let listener = TcpListener::bind(&ADDR).expect("cannot open port");
                 start.wait();
-                let mut connections = service.connections();
-                let requests: CallStream<i32> = connections.next().unwrap()?;
-                requests.take(5).collect::<Result<(), Error>>()
+                let mut connections = listener.incoming();
+                let mut stream = DataStream::new(
+                    connections
+                        .next()
+                        .expect("no connections")
+                        .expect("no stream"),
+                );
+
+                let server = CalcServiceServer;
+                for _ in 0..5 {
+                    CalcService::<i32>::handle_next_request(&server, &mut stream)?;
+                }
+                Ok(())
             });
 
             start.wait();
