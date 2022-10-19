@@ -1,10 +1,13 @@
 use inflector::Inflector;
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse, parse_macro_input, token, Block, ExprPath, ExprStruct, Field, FieldValue, Fields,
-    FieldsNamed, FnArg, Ident, ImplItemMethod, ItemEnum, ItemTrait, Member, Pat, PatIdent, PatType,
-    TraitItem, TraitItemMethod, Variant, Visibility,
+    parse, parse_macro_input, punctuated::Punctuated, spanned::Spanned, token, Block, Expr,
+    ExprPath, ExprStruct, Field, FieldValue, Fields, FieldsNamed, FnArg, GenericArgument,
+    GenericParam, Generics, Ident, ImplItem, ImplItemMethod, ItemEnum, ItemImpl, ItemTrait, Member,
+    Pat, PatIdent, PatType, PathArguments, PathSegment, TraitItem, TraitItemMethod, Type, TypePath,
+    Variant, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -27,7 +30,7 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
             span: service_trait_ident.span(),
         },
         ident: req_enum_ident.clone(),
-        generics: service_trait.generics.clone(),
+        generics: strip_where_clause(&service_trait.generics),
         brace_token: token::Brace {
             span: service_trait_ident.span(),
         },
@@ -55,6 +58,25 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
                 discriminant: None,
             })
             .collect(),
+    };
+
+    let req_enum_impl = ItemImpl {
+        attrs: Vec::new(),
+        defaultness: None,
+        unsafety: None,
+        impl_token: token::Impl {
+            span: Span::call_site(),
+        },
+        generics: service_trait.generics.clone(),
+        trait_: None,
+        self_ty: Box::new(Type::Path(TypePath {
+            qself: None,
+            path: ident_to_path_with_generics(&req_enum_ident, &service_trait.generics),
+        })),
+        brace_token: token::Brace {
+            span: Span::call_site(),
+        },
+        items: Vec::new(),
     };
 
     let methods: Vec<ImplItemMethod> = trait_methods(&service_trait)
@@ -106,6 +128,31 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
 
     let service_trait = add_methods_to_service_trait(service_trait, &req_enum);
 
+    let client_service_impl = ItemImpl {
+        attrs: Vec::new(),
+        defaultness: None,
+        unsafety: None,
+        impl_token: token::Impl {
+            span: service_trait.span(),
+        },
+        generics: service_trait.generics.clone(),
+        trait_: Some((
+            None,
+            ident_to_path_with_generics(&service_trait_ident, &service_trait.generics),
+            token::For {
+                span: service_trait.span(),
+            },
+        )),
+        self_ty: Box::new(syn::Type::Path(TypePath {
+            qself: None,
+            path: ident_to_path(&client_struct_ident),
+        })),
+        brace_token: token::Brace {
+            span: service_trait.span(),
+        },
+        items: methods.into_iter().map(ImplItem::Method).collect(),
+    };
+
     let result = quote!(
         #service_trait
 
@@ -125,14 +172,12 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
         #[derive(serde::Serialize, serde::Deserialize)]
         #req_enum
 
-        impl #service_trait_ident for #client_struct_ident {
-            #(
-                #methods
-            )*
-        }
+        #req_enum_impl
+
+        #client_service_impl
     );
 
-    // eprintln!("OUTPUT: {}", result);
+    eprintln!("OUTPUT: {}", result);
 
     result.into()
 }
@@ -146,6 +191,7 @@ fn add_methods_to_service_trait(mut service_trait: ItemTrait, req_enum: &ItemEnu
         .collect();
 
     let req_enum_name = &req_enum.ident;
+    let req_enum_path = ident_to_path_with_generics(&req_enum.ident, &req_enum.generics);
     let req_enum_variants: Vec<&Ident> = req_enum
         .variants
         .iter()
@@ -153,8 +199,8 @@ fn add_methods_to_service_trait(mut service_trait: ItemTrait, req_enum: &ItemEnu
         .collect();
 
     let handle_next_request_method = quote! {
-        fn handle_next_request(&self, stream: &mut duty::DataStream) -> Result<(), Error> {
-            let request: #req_enum_name = stream.receive()?;
+        fn handle_next_request(&self, stream: &mut duty::DataStream) -> Result<(), duty::Error> {
+            let request: #req_enum_path = stream.receive()?;
             match request {
                 #(
                     #req_enum_name::#req_enum_variants { #( #args ),* } => stream.send(&self.#methods(#( #args ),*)),
@@ -203,4 +249,54 @@ fn enum_variant_to_path(enum_ident: &Ident, variant_ident: &Ident) -> syn::Path 
 fn ident_to_path(ident: &Ident) -> syn::Path {
     syn::parse_str::<syn::Path>(&ident.to_string())
         .expect(&format!("Cannot create path out of '{ident}' identifier"))
+}
+
+fn ident_to_path_with_generics(ident: &Ident, generics: &Generics) -> syn::Path {
+    let mut segments = Punctuated::new();
+
+    let gen_args: Punctuated<GenericArgument, _> = generics
+        .params
+        .iter()
+        .map(|param| match param {
+            GenericParam::Const(param) => GenericArgument::Const(Expr::Path(ExprPath {
+                attrs: Vec::new(),
+                qself: None,
+                path: ident_to_path(&param.ident),
+            })),
+            GenericParam::Lifetime(lifetime_def) => {
+                GenericArgument::Lifetime(lifetime_def.lifetime.clone())
+            }
+            GenericParam::Type(param) => GenericArgument::Type(Type::Path(TypePath {
+                qself: None,
+                path: ident_to_path(&param.ident),
+            })),
+        })
+        .collect();
+
+    let segment = PathSegment {
+        ident: ident.clone(),
+        arguments: if let Some((lt_token, gt_token)) = generics.lt_token.zip(generics.gt_token) {
+            PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                colon2_token: None,
+                lt_token: lt_token.to_owned(),
+                gt_token: gt_token.to_owned(),
+                args: gen_args,
+            })
+        } else {
+            PathArguments::None
+        },
+    };
+
+    segments.push(segment);
+
+    syn::Path {
+        leading_colon: None,
+        segments,
+    }
+}
+
+fn strip_where_clause(generics: &Generics) -> Generics {
+    let mut generics = generics.clone();
+    generics.where_clause = None;
+    generics
 }
