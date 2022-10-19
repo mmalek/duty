@@ -1,7 +1,7 @@
 use duty::error::Error;
 use duty::{service, DataStream};
 use serde::{de::DeserializeOwned, Serialize};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::ops::{Add, Mul};
 use std::sync::Barrier;
 
@@ -60,7 +60,7 @@ fn loopback_specific() -> Result<(), Error> {
 
         start.wait();
 
-        let client = CalculatorClient::new(&ADDR)?;
+        let client = CalculatorClient::new(TcpStream::connect(&ADDR).expect("cannot connect"))?;
         assert_eq!(client.add(2, 3), 5);
         assert_eq!(client.add(38, 78), 116);
         assert_eq!(client.mul(42, 5), 210);

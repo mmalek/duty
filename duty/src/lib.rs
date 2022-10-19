@@ -4,17 +4,20 @@ pub use crate::error::Error;
 pub use duty_attrs::service;
 
 use serde::{de::DeserializeOwned, Serialize};
-use std::io::Read;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::{Read, Write};
 
-pub struct DataStream {
-    stream: TcpStream,
+pub struct DataStream<S> {
+    stream: S,
     size_buf: Vec<u8>,
     data_buf: Vec<u8>,
 }
 
-impl DataStream {
-    pub fn new(stream: TcpStream) -> DataStream {
+impl<S: Read + Write> DataStream<S>
+where
+    S: Read,
+    for<'a> &'a S: Write,
+{
+    pub fn new(stream: S) -> DataStream<S> {
         let mut size_buf = Vec::new();
         size_buf.resize(
             bincode::serialized_size(&std::usize::MAX)
@@ -27,12 +30,6 @@ impl DataStream {
             size_buf,
             data_buf: Vec::new(),
         }
-    }
-
-    pub fn connect<T: ToSocketAddrs>(addr: T) -> Result<DataStream, Error> {
-        TcpStream::connect(addr)
-            .map_err(Error::OutgoingConnectionError)
-            .map(DataStream::new)
     }
 
     pub fn receive<T: DeserializeOwned>(&mut self) -> Result<T, Error> {

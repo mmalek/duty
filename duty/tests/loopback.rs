@@ -1,6 +1,6 @@
 use duty::error::Error;
 use duty::{service, DataStream};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::Barrier;
 
 #[service]
@@ -48,7 +48,7 @@ fn loopback_specific() -> Result<(), Error> {
 
         start.wait();
 
-        let client = LogicServiceClient::new(&ADDR)?;
+        let client = LogicServiceClient::new(TcpStream::connect(&ADDR).expect("cannot connect"))?;
         assert_eq!(client.and(true, true), true);
         assert_eq!(client.and(false, true), false);
         assert_eq!(client.and(true, false), false);

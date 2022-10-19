@@ -157,13 +157,12 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
         #service_trait
 
         pub struct #client_struct_ident {
-            stream: std::cell::RefCell<duty::DataStream>,
+            stream: std::cell::RefCell<duty::DataStream<std::net::TcpStream>>,
         }
 
         impl #client_struct_ident {
-            pub fn new<A>(addr: A) -> std::result::Result<Self, duty::Error>
-            where A: std::net::ToSocketAddrs {
-                let stream = duty::DataStream::connect(addr)?;
+            pub fn new(stream: TcpStream) -> std::result::Result<Self, duty::Error> {
+                let stream = duty::DataStream::new(stream);
                 let stream = std::cell::RefCell::new(stream);
                 Ok(Self { stream })
             }
@@ -177,7 +176,7 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
         #client_service_impl
     );
 
-    eprintln!("OUTPUT: {}", result);
+    // eprintln!("OUTPUT: {}", result);
 
     result.into()
 }
@@ -199,7 +198,7 @@ fn add_methods_to_service_trait(mut service_trait: ItemTrait, req_enum: &ItemEnu
         .collect();
 
     let handle_next_request_method = quote! {
-        fn handle_next_request(&self, stream: &mut duty::DataStream) -> Result<(), duty::Error> {
+        fn handle_next_request(&self, stream: &mut duty::DataStream<std::net::TcpStream>) -> Result<(), duty::Error> {
             let request: #req_enum_path = stream.receive()?;
             match request {
                 #(
