@@ -152,7 +152,7 @@ impl Request {
                 .collect(),
         };
 
-        let path = ident_to_path_with_generics(&req_enum.ident, service.generics());
+        let path = ident_to_path(&req_enum.ident, Some(service.generics()));
 
         let req_impl = ItemImpl {
             attrs: Vec::new(),
@@ -233,7 +233,7 @@ impl Client {
                             expr: syn::Expr::Path(ExprPath {
                                 attrs: Vec::new(),
                                 qself: None,
-                                path: ident_to_path(&arg.ident),
+                                path: ident_to_path(&arg.ident, None),
                             }),
                         })
                         .collect(),
@@ -271,14 +271,14 @@ impl Client {
             generics: service.generics().clone(),
             trait_: Some((
                 None,
-                ident_to_path_with_generics(&service.ident(), &service.generics()),
+                ident_to_path(&service.ident(), Some(&service.generics())),
                 token::For {
                     span: Span::call_site(),
                 },
             )),
             self_ty: Box::new(syn::Type::Path(TypePath {
                 qself: None,
-                path: ident_to_path(&ident),
+                path: ident_to_path(&ident, None),
             })),
             brace_token: token::Brace {
                 span: Span::call_site(),
@@ -327,50 +327,60 @@ fn method_input_args(method: &TraitItemMethod) -> impl Iterator<Item = (&PatType
 }
 
 fn enum_variant_to_path(enum_ident: &Ident, variant_ident: &Ident) -> syn::Path {
-    syn::parse_str::<syn::Path>(&format!("{enum_ident}::{variant_ident}")).expect(&format!(
-        "Cannot create path out of '{enum_ident}::{variant_ident}' enum"
-    ))
-}
-
-fn ident_to_path(ident: &Ident) -> syn::Path {
-    syn::parse_str::<syn::Path>(&ident.to_string())
-        .expect(&format!("Cannot create path out of '{ident}' identifier"))
-}
-
-fn ident_to_path_with_generics(ident: &Ident, generics: &Generics) -> syn::Path {
     let mut segments = Punctuated::new();
 
-    let gen_args: Punctuated<GenericArgument, _> = generics
-        .params
-        .iter()
-        .map(|param| match param {
-            GenericParam::Const(param) => GenericArgument::Const(Expr::Path(ExprPath {
-                attrs: Vec::new(),
-                qself: None,
-                path: ident_to_path(&param.ident),
-            })),
-            GenericParam::Lifetime(lifetime_def) => {
-                GenericArgument::Lifetime(lifetime_def.lifetime.clone())
-            }
-            GenericParam::Type(param) => GenericArgument::Type(Type::Path(TypePath {
-                qself: None,
-                path: ident_to_path(&param.ident),
-            })),
-        })
-        .collect();
+    segments.push(PathSegment {
+        ident: enum_ident.clone(),
+        arguments: PathArguments::None,
+    });
 
-    let segment = PathSegment {
-        ident: ident.clone(),
-        arguments: if let Some((lt_token, gt_token)) = generics.lt_token.zip(generics.gt_token) {
+    segments.push(PathSegment {
+        ident: variant_ident.clone(),
+        arguments: PathArguments::None,
+    });
+
+    syn::Path {
+        leading_colon: None,
+        segments,
+    }
+}
+
+fn ident_to_path(ident: &Ident, generics: Option<&Generics>) -> syn::Path {
+    let mut segments = Punctuated::new();
+
+    let arguments = generics
+        .and_then(|g| Some((g.lt_token?, g.gt_token?, &g.params)))
+        .map(|(lt_token, gt_token, params)| {
+            let gen_args: Punctuated<GenericArgument, _> = params
+                .iter()
+                .map(|param| match param {
+                    GenericParam::Const(param) => GenericArgument::Const(Expr::Path(ExprPath {
+                        attrs: Vec::new(),
+                        qself: None,
+                        path: ident_to_path(&param.ident, None),
+                    })),
+                    GenericParam::Lifetime(lifetime_def) => {
+                        GenericArgument::Lifetime(lifetime_def.lifetime.clone())
+                    }
+                    GenericParam::Type(param) => GenericArgument::Type(Type::Path(TypePath {
+                        qself: None,
+                        path: ident_to_path(&param.ident, None),
+                    })),
+                })
+                .collect();
+
             PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
                 colon2_token: None,
                 lt_token: lt_token.to_owned(),
                 gt_token: gt_token.to_owned(),
                 args: gen_args,
             })
-        } else {
-            PathArguments::None
-        },
+        })
+        .unwrap_or(PathArguments::None);
+
+    let segment = PathSegment {
+        ident: ident.clone(),
+        arguments,
     };
 
     segments.push(segment);
