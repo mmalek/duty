@@ -7,9 +7,9 @@ use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
-    token, Block, Expr, ExprPath, ExprStruct, Field, FieldValue, Fields, FieldsNamed, FnArg,
-    GenericArgument, GenericParam, Generics, Ident, ImplItem, ImplItemMethod, ItemEnum, ItemImpl,
-    ItemTrait, Member, Pat, PatIdent, PatType, PathArguments, PathSegment, TraitItem,
+    token, Attribute, Block, Expr, ExprPath, ExprStruct, Field, FieldValue, Fields, FieldsNamed,
+    FnArg, GenericArgument, GenericParam, Generics, Ident, ImplItem, ImplItemMethod, ItemEnum,
+    ItemImpl, ItemTrait, Member, Pat, PatType, PathArguments, PathSegment, Signature, TraitItem,
     TraitItemMethod, Type, TypePath, Variant, Visibility,
 };
 
@@ -36,6 +36,7 @@ pub fn service(_args: TokenStream, item: TokenStream) -> TokenStream {
 
 struct Service {
     service_trait: ItemTrait,
+    methods: Vec<RpcMethod>,
 }
 
 impl Service {
@@ -51,21 +52,16 @@ impl Service {
         &self.service_trait.generics
     }
 
-    fn methods(&self) -> impl Iterator<Item = &TraitItemMethod> {
-        self.service_trait
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                TraitItem::Method(method) => Some(method),
-                _ => None,
-            })
+    fn methods(&self) -> impl Iterator<Item = &RpcMethod> {
+        self.methods.iter()
     }
 
     fn add_methods(&mut self, request: &Request) {
-        let methods = self.methods().map(|method| &method.sig.ident);
+        let methods = self.methods().map(|method| method.ident());
         let args = self.methods().map(|method| {
-            method_input_args(method)
-                .map(|(_, arg)| arg)
+            method
+                .args()
+                .map(|arg| arg.ident.clone())
                 .collect::<Vec<_>>()
         });
 
@@ -95,8 +91,20 @@ impl Service {
 
 impl Parse for Service {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let service_trait = input.parse()?;
-        Ok(Service { service_trait })
+        let service_trait: ItemTrait = input.parse()?;
+        let methods = service_trait
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TraitItem::Method(method) => Some(method.try_into()),
+                _ => None,
+            })
+            .collect::<syn::Result<_>>()?;
+
+        Ok(Service {
+            service_trait,
+            methods,
+        })
     }
 }
 
@@ -130,19 +138,20 @@ impl Request {
                 .map(|method| Variant {
                     attrs: Vec::new(),
                     ident: Ident::new(
-                        &method.sig.ident.to_string().to_class_case(),
+                        &method.ident().to_string().to_class_case(),
                         Span::call_site(),
                     ),
                     fields: Fields::Named(FieldsNamed {
                         brace_token: token::Brace {
                             span: Span::call_site(),
                         },
-                        named: method_input_args(method)
-                            .map(|(pat_type, pat_ident)| Field {
-                                attrs: pat_type.attrs.clone(),
-                                ident: Some(pat_ident.ident.clone()),
-                                colon_token: Some(pat_type.colon_token.clone()),
-                                ty: *pat_type.ty.to_owned(),
+                        named: method
+                            .args()
+                            .map(|arg| Field {
+                                attrs: arg.arg_type.attrs.clone(),
+                                ident: Some(arg.ident.clone()),
+                                colon_token: Some(arg.arg_type.colon_token.clone()),
+                                ty: *arg.arg_type.ty.to_owned(),
                                 vis: Visibility::Inherited,
                             })
                             .collect(),
@@ -225,8 +234,9 @@ impl Client {
                     brace_token: token::Brace {
                         span: Span::call_site(),
                     },
-                    fields: method_input_args(method)
-                        .map(|(_, arg)| FieldValue {
+                    fields: method
+                        .args()
+                        .map(|arg| FieldValue {
                             attrs: Vec::new(),
                             member: Member::Named(arg.ident.clone()),
                             colon_token: None,
@@ -313,17 +323,65 @@ impl ToTokens for Client {
     }
 }
 
-fn method_input_args(method: &TraitItemMethod) -> impl Iterator<Item = (&PatType, &PatIdent)> {
-    method.sig.inputs.iter().filter_map(|arg| match arg {
-        FnArg::Typed(pat_type) => {
-            if let Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
-                Some((pat_type, pat_ident))
-            } else {
-                None
-            }
+struct RpcMethod {
+    attrs: Vec<Attribute>,
+    sig: Signature,
+    args: Vec<RpcArg>,
+}
+
+impl RpcMethod {
+    fn ident(&self) -> &Ident {
+        &self.sig.ident
+    }
+
+    fn args(&self) -> impl Iterator<Item = &RpcArg> {
+        self.args.iter()
+    }
+}
+
+impl TryFrom<&TraitItemMethod> for RpcMethod {
+    type Error = syn::Error;
+
+    fn try_from(method: &TraitItemMethod) -> Result<Self, Self::Error> {
+        let args = method
+            .sig
+            .inputs
+            .iter()
+            .filter_map(|arg| match arg {
+                FnArg::Typed(pat_type) => Some(pat_type.try_into()),
+                _ => None,
+            })
+            .collect::<syn::Result<_>>()?;
+
+        Ok(RpcMethod {
+            attrs: method.attrs.clone(),
+            sig: method.sig.clone(),
+            args,
+        })
+    }
+}
+
+struct RpcArg {
+    ident: Ident,
+    arg_type: PatType,
+}
+
+impl TryFrom<&PatType> for RpcArg {
+    type Error = syn::Error;
+
+    fn try_from(arg_type: &PatType) -> Result<Self, Self::Error> {
+        use syn::spanned::Spanned;
+        match arg_type.pat.as_ref() {
+            Pat::Ident(pat_ident) => Ok(RpcArg {
+                ident: pat_ident.ident.to_owned(),
+                arg_type: arg_type.to_owned(),
+            }),
+            _ => Err(syn::Error::new(
+                arg_type.span(),
+                format!("only basic patterns are supported in service trait methods"),
+            )),
         }
-        _ => None,
-    })
+    }
 }
 
 fn enum_variant_to_path(enum_ident: &Ident, variant_ident: &Ident) -> syn::Path {
