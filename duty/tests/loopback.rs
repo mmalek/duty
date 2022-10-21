@@ -49,15 +49,15 @@ fn loopback_specific() -> Result<(), Error> {
         start.wait();
 
         let client = LogicServiceClient::new(TcpStream::connect(&ADDR).expect("cannot connect"))?;
-        assert_eq!(client.and(true, true), true);
-        assert_eq!(client.and(false, true), false);
-        assert_eq!(client.and(true, false), false);
-        assert_eq!(client.and(false, false), false);
+        assert_eq!(client.and(true, true)?, true);
+        assert_eq!(client.and(false, true)?, false);
+        assert_eq!(client.and(true, false)?, false);
+        assert_eq!(client.and(false, false)?, false);
 
-        assert_eq!(client.or(true, true), true);
-        assert_eq!(client.or(false, true), true);
-        assert_eq!(client.or(true, false), true);
-        assert_eq!(client.or(false, false), false);
+        assert_eq!(client.or(true, true)?, true);
+        assert_eq!(client.or(false, true)?, true);
+        assert_eq!(client.or(true, false)?, true);
+        assert_eq!(client.or(false, false)?, false);
 
         Ok(())
     })

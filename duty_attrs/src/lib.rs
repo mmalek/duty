@@ -3,13 +3,12 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
 use syn::{
-    parse,
     parse::{Parse, ParseStream},
-    parse_macro_input,
+    parse_macro_input, parse_quote,
     punctuated::Punctuated,
-    token, Attribute, Block, Expr, ExprPath, ExprStruct, Field, FieldValue, Fields, FieldsNamed,
-    FnArg, GenericArgument, GenericParam, Generics, Ident, ImplItem, ImplItemMethod, ItemEnum,
-    ItemImpl, ItemTrait, Member, Pat, PatType, PathArguments, PathSegment, Signature, TraitItem,
+    token, Attribute, Expr, ExprPath, ExprStruct, Field, FieldValue, Fields, FieldsNamed, FnArg,
+    GenericArgument, GenericParam, Generics, Ident, ImplItemMethod, ItemEnum, ItemImpl, ItemTrait,
+    Member, Pat, PatType, PathArguments, PathSegment, ReturnType, Signature, TraitItem,
     TraitItemMethod, Type, TypePath, Variant, Visibility,
 };
 
@@ -68,7 +67,7 @@ impl Service {
         let req_enum_path = request.path();
         let req_enum_variants = request.variant_paths();
 
-        let handle_next_request_method = quote! {
+        let handle_next_request_method = parse_quote! {
             fn handle_next_request(&self, stream: &mut duty::DataStream<std::net::TcpStream>) -> Result<(), duty::Error> {
                 let request: #req_enum_path = stream.receive()?;
                 match request {
@@ -78,10 +77,6 @@ impl Service {
                 }
             }
         };
-
-        let handle_next_request_method = parse(handle_next_request_method.into()).expect(&format!(
-            "Cannot parse handle_next_request method definition"
-        ));
 
         self.service_trait
             .items
@@ -197,7 +192,7 @@ impl Request {
         self.req_enum
             .variants
             .iter()
-            .map(|variant| enum_variant_to_path(&self.req_enum.ident, &variant.ident))
+            .map(|variant| enum_variant_to_path(&self.req_enum, &variant.ident))
     }
 }
 
@@ -217,14 +212,16 @@ impl ToTokens for Request {
 
 struct Client {
     ident: Ident,
-    item_impl: ItemImpl,
+    methods: Vec<ImplItemMethod>,
+    vis: Visibility,
 }
 
 impl Client {
     fn new(service: &Service, request: &Request) -> Client {
         let ident = format_ident!("{}Client", service.ident());
+        let vis = service.vis().clone();
 
-        let methods: Vec<ImplItemMethod> = service
+        let methods = service
             .methods()
             .zip(request.variant_paths())
             .map(|(method, variant_path)| -> ImplItemMethod {
@@ -250,75 +247,62 @@ impl Client {
                     dot2_token: None,
                     rest: None,
                 };
-                let body = quote! {
-                    {
-                        self.stream
-                            .borrow_mut()
-                            .send_receive(&#req_inst)
-                            .expect("Communication error")
-                    }
+
+                let mut sig = method.sig.clone();
+                sig.generics = service.generics().clone();
+                let ret_type = match sig.output {
+                    ReturnType::Default => Box::new(parse_quote!(())),
+                    ReturnType::Type(_, t) => t,
                 };
 
-                let block: Block = parse(body.into()).expect(&format!("Cannot parse {ident} body"));
+                sig.output = parse_quote!(-> Result<#ret_type, duty::Error>);
 
                 ImplItemMethod {
                     attrs: method.attrs.clone(),
-                    sig: method.sig.clone(),
-                    vis: service.vis().clone(),
+                    sig,
+                    vis: vis.clone(),
                     defaultness: None,
-                    block,
+                    block: parse_quote! {
+                        {
+                            self.stream
+                                .borrow_mut()
+                                .send_receive(&#req_inst)
+                        }
+                    },
                 }
             })
             .collect();
 
-        let item_impl = ItemImpl {
-            attrs: Vec::new(),
-            defaultness: None,
-            unsafety: None,
-            impl_token: token::Impl {
-                span: Span::call_site(),
-            },
-            generics: service.generics().clone(),
-            trait_: Some((
-                None,
-                ident_to_path(&service.ident(), Some(&service.generics())),
-                token::For {
-                    span: Span::call_site(),
-                },
-            )),
-            self_ty: Box::new(syn::Type::Path(TypePath {
-                qself: None,
-                path: ident_to_path(&ident, None),
-            })),
-            brace_token: token::Brace {
-                span: Span::call_site(),
-            },
-            items: methods.into_iter().map(ImplItem::Method).collect(),
-        };
-
-        Client { ident, item_impl }
+        Client {
+            ident,
+            methods,
+            vis,
+        }
     }
 }
 
 impl ToTokens for Client {
     fn to_tokens(&self, output: &mut TokenStream2) {
         let ident = &self.ident;
-        let item_impl = &self.item_impl;
+        let methods = &self.methods;
+        let vis = &self.vis;
 
         output.extend(quote!(
-            pub struct #ident {
+            #vis struct #ident {
                 stream: std::cell::RefCell<duty::DataStream<std::net::TcpStream>>,
             }
 
             impl #ident {
-                pub fn new(stream: TcpStream) -> std::result::Result<Self, duty::Error> {
+                #vis fn new(stream: std::net::TcpStream) -> std::result::Result<Self, duty::Error> {
                     let stream = duty::DataStream::new(stream);
                     let stream = std::cell::RefCell::new(stream);
                     Ok(Self { stream })
                 }
-            }
 
-            #item_impl
+                #(
+                    #methods
+                )*
+            }
         ));
     }
 }
@@ -343,6 +327,21 @@ impl TryFrom<&TraitItemMethod> for RpcMethod {
     type Error = syn::Error;
 
     fn try_from(method: &TraitItemMethod) -> Result<Self, Self::Error> {
+        if let Some(lt_token) = &method.sig.generics.lt_token {
+            let span = method
+                .sig
+                .generics
+                .gt_token
+                .as_ref()
+                .and_then(|gt| lt_token.span.join(gt.span))
+                .unwrap_or_else(|| lt_token.span);
+
+            return Err(syn::Error::new(
+                span,
+                "generic methods are not supported in service trait",
+            ));
+        }
+
         let args = method
             .sig
             .inputs
@@ -384,12 +383,12 @@ impl TryFrom<&PatType> for RpcArg {
     }
 }
 
-fn enum_variant_to_path(enum_ident: &Ident, variant_ident: &Ident) -> syn::Path {
+fn enum_variant_to_path(item_enum: &ItemEnum, variant_ident: &Ident) -> syn::Path {
     let mut segments = Punctuated::new();
 
     segments.push(PathSegment {
-        ident: enum_ident.clone(),
-        arguments: PathArguments::None,
+        ident: item_enum.ident.clone(),
+        arguments: generics_to_path_args(Some(&item_enum.generics), true),
     });
 
     segments.push(PathSegment {
@@ -406,7 +405,21 @@ fn enum_variant_to_path(enum_ident: &Ident, variant_ident: &Ident) -> syn::Path 
 fn ident_to_path(ident: &Ident, generics: Option<&Generics>) -> syn::Path {
     let mut segments = Punctuated::new();
 
-    let arguments = generics
+    let segment = PathSegment {
+        ident: ident.clone(),
+        arguments: generics_to_path_args(generics, false),
+    };
+
+    segments.push(segment);
+
+    syn::Path {
+        leading_colon: None,
+        segments,
+    }
+}
+
+fn generics_to_path_args(generics: Option<&Generics>, leading_colon: bool) -> PathArguments {
+    generics
         .and_then(|g| Some((g.lt_token?, g.gt_token?, &g.params)))
         .map(|(lt_token, gt_token, params)| {
             let gen_args: Punctuated<GenericArgument, _> = params
@@ -427,26 +440,22 @@ fn ident_to_path(ident: &Ident, generics: Option<&Generics>) -> syn::Path {
                 })
                 .collect();
 
+            let colon2_token = if leading_colon {
+                Some(token::Colon2 {
+                    spans: [Span::call_site(), Span::call_site()],
+                })
+            } else {
+                None
+            };
+
             PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
-                colon2_token: None,
+                colon2_token,
                 lt_token: lt_token.to_owned(),
                 gt_token: gt_token.to_owned(),
                 args: gen_args,
             })
         })
-        .unwrap_or(PathArguments::None);
-
-    let segment = PathSegment {
-        ident: ident.clone(),
-        arguments,
-    };
-
-    segments.push(segment);
-
-    syn::Path {
-        leading_colon: None,
-        segments,
-    }
+        .unwrap_or(PathArguments::None)
 }
 
 fn strip_where_clause(generics: &Generics) -> Generics {

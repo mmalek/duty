@@ -6,29 +6,31 @@ use std::ops::{Add, Mul};
 use std::sync::Barrier;
 
 #[service]
-trait Calculator<T>
+pub trait Calculator<A, M>
 where
-    T: Add + Mul + Serialize + DeserializeOwned,
-    <T as Add>::Output: Serialize + DeserializeOwned,
-    <T as Mul>::Output: Serialize + DeserializeOwned,
+    A: Add + Serialize + DeserializeOwned,
+    M: Mul + Serialize + DeserializeOwned,
+    <A as Add>::Output: Serialize + DeserializeOwned,
+    <M as Mul>::Output: Serialize + DeserializeOwned,
 {
-    fn add(&self, a: T, b: T) -> <T as Add>::Output;
-    fn mul(&self, a: T, b: T) -> <T as Mul>::Output;
+    fn add(&self, a: A, b: A) -> <A as Add>::Output;
+    fn mul(&self, a: M, b: M) -> <M as Mul>::Output;
 }
 
 struct CalculatorServer;
 
-impl<T> Calculator<T> for CalculatorServer
+impl<A, M> Calculator<A, M> for CalculatorServer
 where
-    T: Add + Mul + Serialize + DeserializeOwned,
-    <T as Add>::Output: Serialize + DeserializeOwned,
-    <T as Mul>::Output: Serialize + DeserializeOwned,
+    A: Add + Serialize + DeserializeOwned,
+    M: Mul + Serialize + DeserializeOwned,
+    <A as Add>::Output: Serialize + DeserializeOwned,
+    <M as Mul>::Output: Serialize + DeserializeOwned,
 {
-    fn add(&self, a: T, b: T) -> <T as Add>::Output {
+    fn add(&self, a: A, b: A) -> <A as Add>::Output {
         a + b
     }
 
-    fn mul(&self, a: T, b: T) -> <T as Mul>::Output {
+    fn mul(&self, a: M, b: M) -> <M as Mul>::Output {
         a * b
     }
 }
@@ -53,7 +55,7 @@ fn loopback_specific() -> Result<(), Error> {
 
             let server = CalculatorServer;
             for _ in 0..5 {
-                Calculator::<i32>::handle_next_request(&server, &mut stream)?;
+                Calculator::<i32, u32>::handle_next_request(&server, &mut stream)?;
             }
             Ok(())
         });
@@ -61,11 +63,11 @@ fn loopback_specific() -> Result<(), Error> {
         start.wait();
 
         let client = CalculatorClient::new(TcpStream::connect(&ADDR).expect("cannot connect"))?;
-        assert_eq!(client.add(2, 3), 5);
-        assert_eq!(client.add(38, 78), 116);
-        assert_eq!(client.mul(42, 5), 210);
-        assert_eq!(client.add(115, -42), 73);
-        assert_eq!(client.add(987, 13), 1000);
+        assert_eq!(client.add::<i32, u32>(2, 3)?, 5);
+        assert_eq!(client.add::<i32, u32>(38, 78)?, 116);
+        assert_eq!(client.mul::<i32, u32>(42, 5)?, 210);
+        assert_eq!(client.add::<i32, u32>(115, -42)?, 73);
+        assert_eq!(client.add::<i32, u32>(987, 13)?, 1000);
 
         Ok(())
     })
