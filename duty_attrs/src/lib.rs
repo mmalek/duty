@@ -2,13 +2,13 @@ use inflector::Inflector;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
+use syn::parse::{Parse, ParseStream};
+use syn::spanned::Spanned;
 use syn::{
-    parse::{Parse, ParseStream},
-    parse_macro_input, parse_quote,
-    punctuated::Punctuated,
-    token, Attribute, Expr, ExprPath, ExprStruct, Field, FieldValue, Fields, FieldsNamed, FnArg,
-    GenericArgument, GenericParam, Generics, Ident, ImplItemMethod, ItemEnum, ItemImpl, ItemTrait,
-    Member, Pat, PatType, PathArguments, PathSegment, ReturnType, Signature, TraitItem,
+    parse_macro_input, parse_quote, punctuated::Punctuated, token, Attribute, Expr, ExprPath,
+    ExprReference, ExprStruct, Field, FieldValue, Fields, FieldsNamed, FnArg, GenericArgument,
+    GenericParam, Generics, Ident, ImplItemMethod, ItemEnum, ItemImpl, ItemTrait, Member, Pat,
+    PatType, PathArguments, PathSegment, Receiver, ReturnType, Signature, TraitItem,
     TraitItemMethod, Type, TypePath, Variant, Visibility,
 };
 
@@ -59,10 +59,12 @@ impl Service {
         let methods = self.methods().map(|method| method.ident());
         let args = self.methods().map(|method| {
             method
-                .args()
+                .rpc_args()
                 .map(|arg| arg.ident.clone())
                 .collect::<Vec<_>>()
         });
+
+        let method_args = self.methods().map(|method| method.method_args());
 
         let req_enum_path = request.path();
         let req_enum_variants = request.variant_paths();
@@ -72,7 +74,7 @@ impl Service {
                 let request: #req_enum_path = stream.receive()?;
                 match request {
                     #(
-                        #req_enum_variants { #( #args ),* } => stream.send(&self.#methods(#( #args ),*)),
+                        #req_enum_variants { #( #args ),* } => stream.send(&Self::#methods(#method_args)),
                     )*
                 }
             }
@@ -141,7 +143,7 @@ impl Request {
                             span: Span::call_site(),
                         },
                         named: method
-                            .args()
+                            .rpc_args()
                             .map(|arg| Field {
                                 attrs: arg.arg_type.attrs.clone(),
                                 ident: Some(arg.ident.clone()),
@@ -232,7 +234,7 @@ impl Client {
                         span: Span::call_site(),
                     },
                     fields: method
-                        .args()
+                        .rpc_args()
                         .map(|arg| FieldValue {
                             attrs: Vec::new(),
                             member: Member::Named(arg.ident.clone()),
@@ -248,14 +250,45 @@ impl Client {
                     rest: None,
                 };
 
-                let mut sig = method.sig.clone();
-                sig.generics = service.generics().clone();
-                let ret_type = match sig.output {
+                let mut inputs = Punctuated::new();
+                inputs.push(FnArg::Receiver(Receiver {
+                    attrs: Vec::new(),
+                    reference: Some((
+                        token::And {
+                            spans: [Span::call_site()],
+                        },
+                        None,
+                    )),
+                    mutability: None,
+                    self_token: token::SelfValue {
+                        span: Span::call_site(),
+                    },
+                }));
+
+                for input in method.sig.inputs.iter() {
+                    if matches!(input, FnArg::Typed(_)) {
+                        inputs.push(input.clone());
+                    }
+                }
+
+                let ret_type = match &method.sig.output {
                     ReturnType::Default => Box::new(parse_quote!(())),
-                    ReturnType::Type(_, t) => t,
+                    ReturnType::Type(_, t) => t.clone(),
                 };
 
-                sig.output = parse_quote!(-> Result<#ret_type, duty::Error>);
+                let sig = Signature {
+                    constness: None,
+                    asyncness: None,
+                    unsafety: None,
+                    abi: None,
+                    fn_token: method.sig.fn_token.clone(),
+                    ident: method.sig.ident.clone(),
+                    generics: service.generics().clone(),
+                    paren_token: method.sig.paren_token.clone(),
+                    inputs,
+                    variadic: None,
+                    output: parse_quote!(-> Result<#ret_type, duty::Error>),
+                };
 
                 ImplItemMethod {
                     attrs: method.attrs.clone(),
@@ -310,7 +343,8 @@ impl ToTokens for Client {
 struct RpcMethod {
     attrs: Vec<Attribute>,
     sig: Signature,
-    args: Vec<RpcArg>,
+    rpc_args: Vec<RpcArg>,
+    method_args: Punctuated<Expr, token::Comma>,
 }
 
 impl RpcMethod {
@@ -318,8 +352,12 @@ impl RpcMethod {
         &self.sig.ident
     }
 
-    fn args(&self) -> impl Iterator<Item = &RpcArg> {
-        self.args.iter()
+    fn rpc_args(&self) -> impl Iterator<Item = &RpcArg> {
+        self.rpc_args.iter()
+    }
+
+    fn method_args(&self) -> &Punctuated<Expr, token::Comma> {
+        &self.method_args
     }
 }
 
@@ -342,7 +380,7 @@ impl TryFrom<&TraitItemMethod> for RpcMethod {
             ));
         }
 
-        let args = method
+        let rpc_args = method
             .sig
             .inputs
             .iter()
@@ -352,10 +390,53 @@ impl TryFrom<&TraitItemMethod> for RpcMethod {
             })
             .collect::<syn::Result<_>>()?;
 
+        let method_args = method
+            .sig
+            .inputs
+            .iter()
+            .map(|arg| match arg {
+                FnArg::Receiver(receiver) => {
+                    if receiver.reference.is_some() {
+                        Ok(Expr::Reference(ExprReference {
+                            attrs: Vec::new(),
+                            and_token: token::And {
+                                spans: [Span::call_site()],
+                            },
+                            raw: Default::default(),
+                            mutability: receiver.mutability.clone(),
+                            expr: Box::new(Expr::Path(ExprPath {
+                                attrs: Vec::new(),
+                                qself: None,
+                                path: ident_to_path(&format_ident!("self"), None),
+                            })),
+                        }))
+                    } else {
+                        Ok(Expr::Path(ExprPath {
+                            attrs: Vec::new(),
+                            qself: None,
+                            path: ident_to_path(&format_ident!("self"), None),
+                        }))
+                    }
+                }
+                FnArg::Typed(pat_type) => match pat_type.pat.as_ref() {
+                    Pat::Ident(pat_ident) => Ok(Expr::Path(ExprPath {
+                        attrs: Vec::new(),
+                        qself: None,
+                        path: ident_to_path(&pat_ident.ident, None),
+                    })),
+                    _ => Err(syn::Error::new(
+                        pat_type.span(),
+                        format!("only basic patterns are supported in service trait methods"),
+                    )),
+                },
+            })
+            .collect::<syn::Result<_>>()?;
+
         Ok(RpcMethod {
             attrs: method.attrs.clone(),
             sig: method.sig.clone(),
-            args,
+            rpc_args,
+            method_args,
         })
     }
 }
@@ -369,7 +450,6 @@ impl TryFrom<&PatType> for RpcArg {
     type Error = syn::Error;
 
     fn try_from(arg_type: &PatType) -> Result<Self, Self::Error> {
-        use syn::spanned::Spanned;
         match arg_type.pat.as_ref() {
             Pat::Ident(pat_ident) => Ok(RpcArg {
                 ident: pat_ident.ident.to_owned(),

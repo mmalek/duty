@@ -7,6 +7,7 @@ use std::sync::Barrier;
 trait LogicService {
     fn and(&self, a: bool, b: bool) -> bool;
     fn or(&self, a: bool, b: bool) -> bool;
+    fn magic_const() -> bool;
 }
 
 struct LogicServiceServer;
@@ -18,6 +19,10 @@ impl LogicService for LogicServiceServer {
 
     fn or(&self, a: bool, b: bool) -> bool {
         a || b
+    }
+
+    fn magic_const() -> bool {
+        true
     }
 }
 
