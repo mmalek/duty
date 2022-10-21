@@ -15,23 +15,23 @@ where
 {
     fn add(&self, a: A, b: A) -> <A as Add>::Output;
     fn mul(&self, a: M, b: M) -> <M as Mul>::Output;
+
+    fn magic_number() -> A;
 }
 
 struct CalculatorServer;
 
-impl<A, M> Calculator<A, M> for CalculatorServer
-where
-    A: Add + Serialize + DeserializeOwned,
-    M: Mul + Serialize + DeserializeOwned,
-    <A as Add>::Output: Serialize + DeserializeOwned,
-    <M as Mul>::Output: Serialize + DeserializeOwned,
-{
-    fn add(&self, a: A, b: A) -> <A as Add>::Output {
+impl Calculator<i32, u32> for CalculatorServer {
+    fn add(&self, a: i32, b: i32) -> i32 {
         a + b
     }
 
-    fn mul(&self, a: M, b: M) -> <M as Mul>::Output {
+    fn mul(&self, a: u32, b: u32) -> u32 {
         a * b
+    }
+
+    fn magic_number() -> i32 {
+        42
     }
 }
 
@@ -54,8 +54,8 @@ fn loopback_specific() -> Result<(), Error> {
             );
 
             let server = CalculatorServer;
-            for _ in 0..5 {
-                Calculator::<i32, u32>::handle_next_request(&server, &mut stream)?;
+            for _ in 0..6 {
+                server.handle_next_request(&mut stream)?;
             }
             Ok(())
         });
@@ -68,6 +68,7 @@ fn loopback_specific() -> Result<(), Error> {
         assert_eq!(client.mul::<i32, u32>(42, 5)?, 210);
         assert_eq!(client.add::<i32, u32>(115, -42)?, 73);
         assert_eq!(client.add::<i32, u32>(987, 13)?, 1000);
+        assert_eq!(client.magic_number::<i32, u32>()?, 42);
 
         Ok(())
     })

@@ -45,7 +45,7 @@ fn loopback_specific() -> Result<(), Error> {
             );
 
             let server = LogicServiceServer;
-            for _ in 0..8 {
+            for _ in 0..9 {
                 server.handle_next_request(&mut stream)?;
             }
             Ok(())
@@ -63,6 +63,8 @@ fn loopback_specific() -> Result<(), Error> {
         assert_eq!(client.or(false, true)?, true);
         assert_eq!(client.or(true, false)?, true);
         assert_eq!(client.or(false, false)?, false);
+
+        assert_eq!(client.magic_const()?, true);
 
         Ok(())
     })
