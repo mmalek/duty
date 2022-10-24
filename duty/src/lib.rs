@@ -12,7 +12,7 @@ pub struct DataStream<S> {
     data_buf: Vec<u8>,
 }
 
-impl<S: Read + Write> DataStream<S>
+impl<S> DataStream<S>
 where
     S: Read,
     for<'a> &'a S: Write,

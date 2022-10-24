@@ -2,8 +2,10 @@ use inflector::Inflector;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
+use std::iter;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
+use syn::WhereClause;
 use syn::{
     parse_macro_input, parse_quote, punctuated::Punctuated, token, Attribute, Expr, ExprPath,
     ExprReference, ExprStruct, Field, FieldValue, Fields, FieldsNamed, FnArg, GenericArgument,
@@ -70,7 +72,10 @@ impl Service {
         let req_enum_variants = request.variant_paths();
 
         let handle_next_request_method = parse_quote! {
-            fn handle_next_request(&self, stream: &mut duty::DataStream<std::net::TcpStream>) -> Result<(), duty::Error> {
+            fn handle_next_request<ReadWriteStream>(&self, stream: &mut duty::DataStream<ReadWriteStream>) -> Result<(), duty::Error>
+            where
+                ReadWriteStream: std::io::Read,
+                for<'a> &'a ReadWriteStream: std::io::Write, {
                 let request: #req_enum_path = stream.receive()?;
                 match request {
                     #(
@@ -322,11 +327,36 @@ impl ToTokens for Client {
     fn to_tokens(&self, output: &mut TokenStream2) {
         let vis = &self.vis;
 
+        let mut generics = Generics {
+            lt_token: Some(Default::default()),
+            params: iter::once::<GenericParam>(parse_quote!(ReadWriteStream)).collect(),
+            gt_token: Some(Default::default()),
+            where_clause: Some(WhereClause {
+                where_token: Default::default(),
+                predicates: parse_quote!(
+                    ReadWriteStream: std::io::Read,
+                    for<'a> &'a ReadWriteStream: std::io::Write,
+                ),
+            }),
+        };
+
+        generics
+            .params
+            .extend(self.generics.params.iter().cloned());
+
+        if let Some((where_clause, service_where)) = generics
+            .where_clause
+            .as_mut()
+            .zip(self.generics.where_clause.as_ref())
+        {
+            where_clause.predicates.extend(service_where.predicates.iter().cloned());
+        }
+
         let gen_args = generics_params_to_args(&self.generics.params);
 
         let fields = parse_quote!(
             {
-                stream: std::cell::RefCell<duty::DataStream<std::net::TcpStream>>,
+                stream: std::cell::RefCell<duty::DataStream<ReadWriteStream>>,
                 phantom: std::marker::PhantomData<(#gen_args)>,
             }
         );
@@ -338,14 +368,14 @@ impl ToTokens for Client {
                 span: Span::call_site(),
             },
             ident: self.ident.clone(),
-            generics: self.generics.clone(),
+            generics: generics.clone(),
             fields: Fields::Named(fields),
             semi_token: None,
         };
 
         let mut methods = Vec::new();
         methods.push(parse_quote!(
-            #vis fn new(stream: std::net::TcpStream) -> std::result::Result<Self, duty::Error> {
+            #vis fn new(stream: ReadWriteStream) -> std::result::Result<Self, duty::Error> {
                 let stream = duty::DataStream::new(stream);
                 let stream = std::cell::RefCell::new(stream);
                 Ok(Self { stream, phantom: std::marker::PhantomData {} })
@@ -361,11 +391,11 @@ impl ToTokens for Client {
             impl_token: token::Impl {
                 span: Span::call_site(),
             },
-            generics: self.generics.clone(),
+            generics: generics.clone(),
             trait_: None,
             self_ty: Box::new(Type::Path(TypePath {
                 qself: None,
-                path: ident_to_path(&self.ident, Some(&self.generics)),
+                path: ident_to_path(&self.ident, Some(&generics)),
             })),
             brace_token: token::Brace {
                 span: Span::call_site(),
