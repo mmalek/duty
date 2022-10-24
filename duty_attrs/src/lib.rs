@@ -7,9 +7,9 @@ use syn::spanned::Spanned;
 use syn::{
     parse_macro_input, parse_quote, punctuated::Punctuated, token, Attribute, Expr, ExprPath,
     ExprReference, ExprStruct, Field, FieldValue, Fields, FieldsNamed, FnArg, GenericArgument,
-    GenericParam, Generics, Ident, ImplItemMethod, ItemEnum, ItemImpl, ItemTrait, Member, Pat,
-    PatType, PathArguments, PathSegment, Receiver, ReturnType, Signature, TraitItem,
-    TraitItemMethod, Type, TypePath, Variant, Visibility,
+    GenericParam, Generics, Ident, ImplItem, ImplItemMethod, ItemEnum, ItemImpl, ItemStruct,
+    ItemTrait, Member, Pat, PatType, PathArguments, PathSegment, Receiver, ReturnType, Signature,
+    Token, TraitItem, TraitItemMethod, Type, TypePath, Variant, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -216,6 +216,7 @@ struct Client {
     ident: Ident,
     methods: Vec<ImplItemMethod>,
     vis: Visibility,
+    generics: Generics,
 }
 
 impl Client {
@@ -283,7 +284,7 @@ impl Client {
                     abi: None,
                     fn_token: method.sig.fn_token.clone(),
                     ident: method.sig.ident.clone(),
-                    generics: service.generics().clone(),
+                    generics: Default::default(),
                     paren_token: method.sig.paren_token.clone(),
                     inputs,
                     variadic: None,
@@ -306,36 +307,76 @@ impl Client {
             })
             .collect();
 
+        let generics = service.generics().clone();
+
         Client {
             ident,
             methods,
             vis,
+            generics,
         }
     }
 }
 
 impl ToTokens for Client {
     fn to_tokens(&self, output: &mut TokenStream2) {
-        let ident = &self.ident;
-        let methods = &self.methods;
         let vis = &self.vis;
 
-        output.extend(quote!(
-            #vis struct #ident {
+        let gen_args = generics_params_to_args(&self.generics.params);
+
+        let fields = parse_quote!(
+            {
                 stream: std::cell::RefCell<duty::DataStream<std::net::TcpStream>>,
+                phantom: std::marker::PhantomData<(#gen_args)>,
             }
+        );
 
-            impl #ident {
-                #vis fn new(stream: std::net::TcpStream) -> std::result::Result<Self, duty::Error> {
-                    let stream = duty::DataStream::new(stream);
-                    let stream = std::cell::RefCell::new(stream);
-                    Ok(Self { stream })
-                }
+        let item_struct = ItemStruct {
+            attrs: Vec::new(),
+            vis: self.vis.clone(),
+            struct_token: token::Struct {
+                span: Span::call_site(),
+            },
+            ident: self.ident.clone(),
+            generics: self.generics.clone(),
+            fields: Fields::Named(fields),
+            semi_token: None,
+        };
 
-                #(
-                    #methods
-                )*
+        let mut methods = Vec::new();
+        methods.push(parse_quote!(
+            #vis fn new(stream: std::net::TcpStream) -> std::result::Result<Self, duty::Error> {
+                let stream = duty::DataStream::new(stream);
+                let stream = std::cell::RefCell::new(stream);
+                Ok(Self { stream, phantom: std::marker::PhantomData {} })
             }
+        ));
+
+        methods.extend(self.methods.clone().into_iter());
+
+        let item_impl = ItemImpl {
+            attrs: Vec::new(),
+            defaultness: None,
+            unsafety: None,
+            impl_token: token::Impl {
+                span: Span::call_site(),
+            },
+            generics: self.generics.clone(),
+            trait_: None,
+            self_ty: Box::new(Type::Path(TypePath {
+                qself: None,
+                path: ident_to_path(&self.ident, Some(&self.generics)),
+            })),
+            brace_token: token::Brace {
+                span: Span::call_site(),
+            },
+            items: methods.into_iter().map(ImplItem::Method).collect(),
+        };
+
+        output.extend(quote!(
+            #item_struct
+
+            #item_impl
         ));
     }
 }
@@ -498,27 +539,33 @@ fn ident_to_path(ident: &Ident, generics: Option<&Generics>) -> syn::Path {
     }
 }
 
+fn generics_params_to_args(
+    params: &Punctuated<GenericParam, Token![,]>,
+) -> Punctuated<GenericArgument, Token![,]> {
+    params
+        .iter()
+        .map(|param| match param {
+            GenericParam::Const(param) => GenericArgument::Const(Expr::Path(ExprPath {
+                attrs: Vec::new(),
+                qself: None,
+                path: ident_to_path(&param.ident, None),
+            })),
+            GenericParam::Lifetime(lifetime_def) => {
+                GenericArgument::Lifetime(lifetime_def.lifetime.clone())
+            }
+            GenericParam::Type(param) => GenericArgument::Type(Type::Path(TypePath {
+                qself: None,
+                path: ident_to_path(&param.ident, None),
+            })),
+        })
+        .collect()
+}
+
 fn generics_to_path_args(generics: Option<&Generics>, leading_colon: bool) -> PathArguments {
     generics
         .and_then(|g| Some((g.lt_token?, g.gt_token?, &g.params)))
         .map(|(lt_token, gt_token, params)| {
-            let gen_args: Punctuated<GenericArgument, _> = params
-                .iter()
-                .map(|param| match param {
-                    GenericParam::Const(param) => GenericArgument::Const(Expr::Path(ExprPath {
-                        attrs: Vec::new(),
-                        qself: None,
-                        path: ident_to_path(&param.ident, None),
-                    })),
-                    GenericParam::Lifetime(lifetime_def) => {
-                        GenericArgument::Lifetime(lifetime_def.lifetime.clone())
-                    }
-                    GenericParam::Type(param) => GenericArgument::Type(Type::Path(TypePath {
-                        qself: None,
-                        path: ident_to_path(&param.ident, None),
-                    })),
-                })
-                .collect();
+            let gen_args = generics_params_to_args(params);
 
             let colon2_token = if leading_colon {
                 Some(token::Colon2 {
