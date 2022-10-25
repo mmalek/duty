@@ -1,17 +1,16 @@
 use inflector::Inflector;
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
 use std::iter;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::WhereClause;
 use syn::{
-    parse_macro_input, parse_quote, punctuated::Punctuated, token, Attribute, Expr, ExprPath,
-    ExprReference, ExprStruct, Field, FieldValue, Fields, FieldsNamed, FnArg, GenericArgument,
-    GenericParam, Generics, Ident, ImplItem, ImplItemMethod, ItemEnum, ItemImpl, ItemStruct,
-    ItemTrait, Member, Pat, PatType, PathArguments, PathSegment, Receiver, ReturnType, Signature,
-    Token, TraitItem, TraitItemMethod, Type, TypePath, Variant, Visibility,
+    parse_macro_input, parse_quote, punctuated::Punctuated, token, Expr, ExprPath, ExprReference,
+    FnArg, GenericArgument, GenericParam, Generics, Ident, ItemTrait, Pat, PatType, PathArguments,
+    PathSegment, ReturnType, Signature, Token, TraitItem, TraitItemMethod, Type, TypePath,
+    Visibility,
 };
 
 #[proc_macro_attribute]
@@ -117,77 +116,27 @@ impl ToTokens for Service {
 }
 
 struct Request {
-    req_enum: ItemEnum,
-    req_impl: ItemImpl,
     path: syn::Path,
+    vis: Visibility,
+    ident: Ident,
+    generics: Generics,
+    variants: Vec<RequestVariant>,
 }
 
 impl Request {
     fn new(service: &Service) -> Request {
-        let req_enum = ItemEnum {
-            attrs: Vec::new(),
-            vis: service.vis().clone(),
-            enum_token: token::Enum {
-                span: Span::call_site(),
-            },
-            ident: format_ident!("{}Request", service.ident()),
-            generics: strip_where_clause(service.generics()),
-            brace_token: token::Brace {
-                span: Span::call_site(),
-            },
-            variants: service
-                .methods()
-                .map(|method| Variant {
-                    attrs: Vec::new(),
-                    ident: Ident::new(
-                        &method.ident().to_string().to_class_case(),
-                        Span::call_site(),
-                    ),
-                    fields: Fields::Named(FieldsNamed {
-                        brace_token: token::Brace {
-                            span: Span::call_site(),
-                        },
-                        named: method
-                            .rpc_args()
-                            .map(|arg| Field {
-                                attrs: arg.arg_type.attrs.clone(),
-                                ident: Some(arg.ident.clone()),
-                                colon_token: Some(arg.arg_type.colon_token.clone()),
-                                ty: *arg.arg_type.ty.to_owned(),
-                                vis: Visibility::Inherited,
-                            })
-                            .collect(),
-                    }),
-                    discriminant: None,
-                })
-                .collect(),
-        };
+        let ident = format_ident!("{}Request", service.ident());
 
-        let path = ident_to_path(&req_enum.ident, Some(service.generics()));
+        let path = ident_to_path(&ident, Some(service.generics()));
 
-        let req_impl = ItemImpl {
-            attrs: Vec::new(),
-            defaultness: None,
-            unsafety: None,
-            impl_token: token::Impl {
-                span: Span::call_site(),
-            },
-            generics: service.generics().clone(),
-            trait_: None,
-            self_ty: Box::new(Type::Path(TypePath {
-                qself: None,
-                path: path.clone(),
-            })),
-            brace_token: token::Brace {
-                span: Span::call_site(),
-            },
-            items: Vec::new(),
-        };
+        let variants = service.methods().map(RequestVariant::new).collect();
 
         Request {
-            req_enum,
-            req_impl,
             path,
+            vis: service.vis().clone(),
+            ident,
+            generics: service.generics().clone(),
+            variants,
         }
     }
 
@@ -196,30 +145,63 @@ impl Request {
     }
 
     fn variant_paths<'a>(&'a self) -> impl Iterator<Item = syn::Path> + 'a {
-        self.req_enum
-            .variants
+        self.variants
             .iter()
-            .map(|variant| enum_variant_to_path(&self.req_enum, &variant.ident))
+            .map(|variant| enum_variant_to_path(&self.ident, &self.generics, &variant.ident))
     }
 }
 
 impl ToTokens for Request {
     fn to_tokens(&self, output: &mut TokenStream2) {
-        let req_enum = &self.req_enum;
-        let req_impl = &self.req_impl;
+        let vis = &self.vis;
+        let ident = &self.ident;
+        let variants = &self.variants;
+
+        let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
 
         output.extend(quote!(
             #[derive(serde::Serialize, serde::Deserialize)]
-            #req_enum
+            #vis enum #ident #ty_generics {
+                #(
+                    #variants,
+                )*
+            }
 
-            #req_impl
+            impl #impl_generics #ident #ty_generics #where_clause {
+            }
         ));
+    }
+}
+
+struct RequestVariant {
+    ident: Ident,
+    fields: Vec<RpcArg>,
+}
+
+impl RequestVariant {
+    fn new(method: &RpcMethod) -> RequestVariant {
+        RequestVariant {
+            ident: format_ident!("{}", method.ident().to_string().to_class_case()),
+            fields: method.rpc_args().cloned().collect(),
+        }
+    }
+}
+
+impl ToTokens for RequestVariant {
+    fn to_tokens(&self, output: &mut TokenStream2) {
+        let ident = &self.ident;
+        let field_idents = self.fields.iter().map(|field| &field.ident);
+        let field_types = self.fields.iter().map(|field| &field.arg_type);
+
+        output.extend(quote!(
+            #ident { #( #field_idents: #field_types, )* }
+        ))
     }
 }
 
 struct Client {
     ident: Ident,
-    methods: Vec<ImplItemMethod>,
+    methods: Vec<ClientMethod>,
     vis: Visibility,
     generics: Generics,
 }
@@ -232,82 +214,14 @@ impl Client {
         let methods = service
             .methods()
             .zip(request.variant_paths())
-            .map(|(method, variant_path)| -> ImplItemMethod {
-                let req_inst = ExprStruct {
-                    attrs: Vec::new(),
-                    path: variant_path,
-                    brace_token: token::Brace {
-                        span: Span::call_site(),
-                    },
-                    fields: method
-                        .rpc_args()
-                        .map(|arg| FieldValue {
-                            attrs: Vec::new(),
-                            member: Member::Named(arg.ident.clone()),
-                            colon_token: None,
-                            expr: syn::Expr::Path(ExprPath {
-                                attrs: Vec::new(),
-                                qself: None,
-                                path: ident_to_path(&arg.ident, None),
-                            }),
-                        })
-                        .collect(),
-                    dot2_token: None,
-                    rest: None,
-                };
+            .map(|(method, variant_path)| {
+                let req_fields = method.rpc_args().map(|arg| arg.ident.clone()).collect();
 
-                let mut inputs = Punctuated::new();
-                inputs.push(FnArg::Receiver(Receiver {
-                    attrs: Vec::new(),
-                    reference: Some((
-                        token::And {
-                            spans: [Span::call_site()],
-                        },
-                        None,
-                    )),
-                    mutability: None,
-                    self_token: token::SelfValue {
-                        span: Span::call_site(),
-                    },
-                }));
-
-                for input in method.sig.inputs.iter() {
-                    if matches!(input, FnArg::Typed(_)) {
-                        inputs.push(input.clone());
-                    }
-                }
-
-                let ret_type = match &method.sig.output {
-                    ReturnType::Default => Box::new(parse_quote!(())),
-                    ReturnType::Type(_, t) => t.clone(),
-                };
-
-                let sig = Signature {
-                    constness: None,
-                    asyncness: None,
-                    unsafety: None,
-                    abi: None,
-                    fn_token: method.sig.fn_token.clone(),
-                    ident: method.sig.ident.clone(),
-                    generics: Default::default(),
-                    paren_token: method.sig.paren_token.clone(),
-                    inputs,
-                    variadic: None,
-                    output: parse_quote!(-> Result<#ret_type, duty::Error>),
-                };
-
-                ImplItemMethod {
-                    attrs: method.attrs.clone(),
-                    sig,
+                ClientMethod {
                     vis: vis.clone(),
-                    defaultness: None,
-                    block: parse_quote! {
-                        {
-                            self.stream
-                                .borrow_mut()
-                                .send_receive(&#req_inst)
-                        }
-                    },
+                    sig: method.sig.clone(),
+                    req_variant: variant_path,
+                    req_fields,
                 }
             })
             .collect();
@@ -325,7 +239,9 @@ impl Client {
 
 impl ToTokens for Client {
     fn to_tokens(&self, output: &mut TokenStream2) {
+        let ident = &self.ident;
         let vis = &self.vis;
+        let methods = &self.methods;
 
         let mut generics = Generics {
             lt_token: Some(Default::default()),
@@ -340,79 +256,80 @@ impl ToTokens for Client {
             }),
         };
 
-        generics
-            .params
-            .extend(self.generics.params.iter().cloned());
+        generics.params.extend(self.generics.params.iter().cloned());
 
         if let Some((where_clause, service_where)) = generics
             .where_clause
             .as_mut()
             .zip(self.generics.where_clause.as_ref())
         {
-            where_clause.predicates.extend(service_where.predicates.iter().cloned());
+            where_clause
+                .predicates
+                .extend(service_where.predicates.iter().cloned());
         }
 
         let gen_args = generics_params_to_args(&self.generics.params);
 
-        let fields = parse_quote!(
-            {
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+        output.extend(quote!(
+            #vis struct #ident #ty_generics {
                 stream: std::cell::RefCell<duty::DataStream<ReadWriteStream>>,
                 phantom: std::marker::PhantomData<(#gen_args)>,
             }
-        );
 
-        let item_struct = ItemStruct {
-            attrs: Vec::new(),
-            vis: self.vis.clone(),
-            struct_token: token::Struct {
-                span: Span::call_site(),
-            },
-            ident: self.ident.clone(),
-            generics: generics.clone(),
-            fields: Fields::Named(fields),
-            semi_token: None,
-        };
+            impl #impl_generics #ident #ty_generics #where_clause {
+                #vis fn new(stream: ReadWriteStream) -> std::result::Result<Self, duty::Error> {
+                    let stream = duty::DataStream::new(stream);
+                    let stream = std::cell::RefCell::new(stream);
+                    Ok(Self { stream, phantom: std::marker::PhantomData {} })
+                }
 
-        let mut methods = Vec::new();
-        methods.push(parse_quote!(
-            #vis fn new(stream: ReadWriteStream) -> std::result::Result<Self, duty::Error> {
-                let stream = duty::DataStream::new(stream);
-                let stream = std::cell::RefCell::new(stream);
-                Ok(Self { stream, phantom: std::marker::PhantomData {} })
+                #(
+                    #methods
+                )*
             }
         ));
+    }
+}
 
-        methods.extend(self.methods.clone().into_iter());
+struct ClientMethod {
+    vis: Visibility,
+    sig: Signature,
+    req_variant: syn::Path,
+    req_fields: Vec<Ident>,
+}
 
-        let item_impl = ItemImpl {
-            attrs: Vec::new(),
-            defaultness: None,
-            unsafety: None,
-            impl_token: token::Impl {
-                span: Span::call_site(),
-            },
-            generics: generics.clone(),
-            trait_: None,
-            self_ty: Box::new(Type::Path(TypePath {
-                qself: None,
-                path: ident_to_path(&self.ident, Some(&generics)),
-            })),
-            brace_token: token::Brace {
-                span: Span::call_site(),
-            },
-            items: methods.into_iter().map(ImplItem::Method).collect(),
+impl ToTokens for ClientMethod {
+    fn to_tokens(&self, output: &mut TokenStream2) {
+        let vis = &self.vis;
+        let ident = &self.sig.ident;
+        let args = self
+            .sig
+            .inputs
+            .iter()
+            .filter(|arg| matches!(arg, FnArg::Typed(_)));
+        let req_variant = &self.req_variant;
+        let req_fields = &self.req_fields;
+
+        let unit_type = Box::new(parse_quote!(()));
+
+        let ret_type = match &self.sig.output {
+            ReturnType::Default => &unit_type,
+            ReturnType::Type(_, t) => &t,
         };
 
         output.extend(quote!(
-            #item_struct
-
-            #item_impl
+            #vis fn #ident (&self #(, #args)* ) -> Result<#ret_type, duty::Error> {
+                self.stream
+                    .borrow_mut()
+                    .send_receive(& #req_variant {#( #req_fields, )*})
+            }
         ));
     }
 }
 
 struct RpcMethod {
-    attrs: Vec<Attribute>,
     sig: Signature,
     rpc_args: Vec<RpcArg>,
     method_args: Punctuated<Expr, token::Comma>,
@@ -470,9 +387,7 @@ impl TryFrom<&TraitItemMethod> for RpcMethod {
                     if receiver.reference.is_some() {
                         Ok(Expr::Reference(ExprReference {
                             attrs: Vec::new(),
-                            and_token: token::And {
-                                spans: [Span::call_site()],
-                            },
+                            and_token: Default::default(),
                             raw: Default::default(),
                             mutability: receiver.mutability.clone(),
                             expr: Box::new(Expr::Path(ExprPath {
@@ -504,7 +419,6 @@ impl TryFrom<&TraitItemMethod> for RpcMethod {
             .collect::<syn::Result<_>>()?;
 
         Ok(RpcMethod {
-            attrs: method.attrs.clone(),
             sig: method.sig.clone(),
             rpc_args,
             method_args,
@@ -512,9 +426,10 @@ impl TryFrom<&TraitItemMethod> for RpcMethod {
     }
 }
 
+#[derive(Clone)]
 struct RpcArg {
     ident: Ident,
-    arg_type: PatType,
+    arg_type: Box<Type>,
 }
 
 impl TryFrom<&PatType> for RpcArg {
@@ -524,7 +439,7 @@ impl TryFrom<&PatType> for RpcArg {
         match arg_type.pat.as_ref() {
             Pat::Ident(pat_ident) => Ok(RpcArg {
                 ident: pat_ident.ident.to_owned(),
-                arg_type: arg_type.to_owned(),
+                arg_type: arg_type.ty.clone(),
             }),
             _ => Err(syn::Error::new(
                 arg_type.span(),
@@ -534,12 +449,16 @@ impl TryFrom<&PatType> for RpcArg {
     }
 }
 
-fn enum_variant_to_path(item_enum: &ItemEnum, variant_ident: &Ident) -> syn::Path {
+fn enum_variant_to_path(
+    enum_ident: &Ident,
+    generics: &Generics,
+    variant_ident: &Ident,
+) -> syn::Path {
     let mut segments = Punctuated::new();
 
     segments.push(PathSegment {
-        ident: item_enum.ident.clone(),
-        arguments: generics_to_path_args(Some(&item_enum.generics), true),
+        ident: enum_ident.clone(),
+        arguments: generics_to_path_args(Some(&generics), true),
     });
 
     segments.push(PathSegment {
@@ -598,9 +517,7 @@ fn generics_to_path_args(generics: Option<&Generics>, leading_colon: bool) -> Pa
             let gen_args = generics_params_to_args(params);
 
             let colon2_token = if leading_colon {
-                Some(token::Colon2 {
-                    spans: [Span::call_site(), Span::call_site()],
-                })
+                Some(Default::default())
             } else {
                 None
             };
@@ -613,10 +530,4 @@ fn generics_to_path_args(generics: Option<&Generics>, leading_colon: bool) -> Pa
             })
         })
         .unwrap_or(PathArguments::None)
-}
-
-fn strip_where_clause(generics: &Generics) -> Generics {
-    let mut generics = generics.clone();
-    generics.where_clause = None;
-    generics
 }
