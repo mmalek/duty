@@ -7,10 +7,10 @@ use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::WhereClause;
 use syn::{
-    parse_macro_input, parse_quote, punctuated::Punctuated, token, Expr, ExprPath, ExprReference,
-    FnArg, GenericArgument, GenericParam, Generics, Ident, ItemTrait, Pat, PatType, PathArguments,
-    PathSegment, ReturnType, Signature, Token, TraitItem, TraitItemMethod, Type, TypePath,
-    Visibility,
+    parse_macro_input, parse_quote, punctuated::Punctuated, token, Expr, ExprPath, FnArg,
+    GenericArgument, GenericParam, Generics, Ident, ItemTrait, Pat, PatType, PathArguments,
+    PathSegment, Receiver, ReturnType, Signature, Token, TraitItem, TraitItemMethod, Type,
+    TypePath, Visibility,
 };
 
 #[proc_macro_attribute]
@@ -65,20 +65,26 @@ impl Service {
                 .collect::<Vec<_>>()
         });
 
-        let method_args = self.methods().map(|method| method.method_args());
+        let method_call_args = self.methods().map(RpcMethod::method_call_args);
 
         let req_enum_path = request.path();
         let req_enum_variants = request.variant_paths();
 
+        let receiver: Receiver = if self.methods().any(RpcMethod::has_ref_mut_self) {
+            parse_quote!(&mut self)
+        } else {
+            parse_quote!(&self)
+        };
+
         let handle_next_request_method = parse_quote! {
-            fn handle_next_request<ReadWriteStream>(&self, stream: &mut duty::DataStream<ReadWriteStream>) -> Result<(), duty::Error>
+            fn handle_next_request<ReadWriteStream>(#receiver, stream: &mut duty::DataStream<ReadWriteStream>) -> Result<(), duty::Error>
             where
                 ReadWriteStream: std::io::Read,
                 for<'a> &'a ReadWriteStream: std::io::Write, {
                 let request: #req_enum_path = stream.receive()?;
                 match request {
                     #(
-                        #req_enum_variants { #( #args ),* } => stream.send(&Self::#methods(#method_args)),
+                        #req_enum_variants { #( #args ),* } => stream.send(&Self::#methods(#method_call_args)),
                     )*
                 }
             }
@@ -332,7 +338,7 @@ impl ToTokens for ClientMethod {
 struct RpcMethod {
     sig: Signature,
     rpc_args: Vec<RpcArg>,
-    method_args: Punctuated<Expr, token::Comma>,
+    method_call_args: Punctuated<Expr, token::Comma>,
 }
 
 impl RpcMethod {
@@ -344,8 +350,19 @@ impl RpcMethod {
         self.rpc_args.iter()
     }
 
-    fn method_args(&self) -> &Punctuated<Expr, token::Comma> {
-        &self.method_args
+    fn method_call_args(&self) -> &Punctuated<Expr, token::Comma> {
+        &self.method_call_args
+    }
+
+    fn has_ref_mut_self(&self) -> bool {
+        matches!(
+            self.sig.receiver(),
+            Some(&FnArg::Receiver(Receiver {
+                reference: Some(_),
+                mutability: Some(_),
+                ..
+            }))
+        )
     }
 }
 
@@ -378,32 +395,16 @@ impl TryFrom<&TraitItemMethod> for RpcMethod {
             })
             .collect::<syn::Result<_>>()?;
 
-        let method_args = method
+        let method_call_args = method
             .sig
             .inputs
             .iter()
             .map(|arg| match arg {
-                FnArg::Receiver(receiver) => {
-                    if receiver.reference.is_some() {
-                        Ok(Expr::Reference(ExprReference {
-                            attrs: Vec::new(),
-                            and_token: Default::default(),
-                            raw: Default::default(),
-                            mutability: receiver.mutability.clone(),
-                            expr: Box::new(Expr::Path(ExprPath {
-                                attrs: Vec::new(),
-                                qself: None,
-                                path: ident_to_path(&format_ident!("self"), None),
-                            })),
-                        }))
-                    } else {
-                        Ok(Expr::Path(ExprPath {
-                            attrs: Vec::new(),
-                            qself: None,
-                            path: ident_to_path(&format_ident!("self"), None),
-                        }))
-                    }
-                }
+                FnArg::Receiver(_) => Ok(Expr::Path(ExprPath {
+                    attrs: Vec::new(),
+                    qself: None,
+                    path: ident_to_path(&format_ident!("self"), None),
+                })),
                 FnArg::Typed(pat_type) => match pat_type.pat.as_ref() {
                     Pat::Ident(pat_ident) => Ok(Expr::Path(ExprPath {
                         attrs: Vec::new(),
@@ -421,7 +422,7 @@ impl TryFrom<&TraitItemMethod> for RpcMethod {
         Ok(RpcMethod {
             sig: method.sig.clone(),
             rpc_args,
-            method_args,
+            method_call_args,
         })
     }
 }

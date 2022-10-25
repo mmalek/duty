@@ -14,7 +14,7 @@ where
     <M as Mul>::Output: Serialize + DeserializeOwned,
 {
     fn add(&self, a: A, b: A) -> <A as Add>::Output;
-    fn mul(&self, a: M, b: M) -> <M as Mul>::Output;
+    fn mul(&mut self, a: M, b: M) -> <M as Mul>::Output;
 
     fn magic_number() -> A;
 }
@@ -26,7 +26,7 @@ impl Calculator<i32, u32> for CalculatorServer {
         a + b
     }
 
-    fn mul(&self, a: u32, b: u32) -> u32 {
+    fn mul(&mut self, a: u32, b: u32) -> u32 {
         a * b
     }
 
@@ -53,7 +53,7 @@ fn loopback_specific() -> Result<(), Error> {
                     .expect("no stream"),
             );
 
-            let server = CalculatorServer;
+            let mut server = CalculatorServer;
             for _ in 0..6 {
                 server.handle_next_request(&mut stream)?;
             }
