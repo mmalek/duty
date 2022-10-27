@@ -77,10 +77,11 @@ impl Service {
         };
 
         let handle_next_request_method = parse_quote! {
+            /// Waits for the next request and calls appropriate trait method
             fn handle_next_request<ReadWriteStream>(#receiver, stream: &mut duty::DataStream<ReadWriteStream>) -> Result<(), duty::Error>
             where
-                ReadWriteStream: std::io::Read,
-                for<'a> &'a ReadWriteStream: std::io::Write, {
+                ReadWriteStream: std::io::Read + std::io::Write,
+            {
                 let request: #req_enum_path = stream.receive()?;
                 match request {
                     #(
@@ -255,10 +256,7 @@ impl ToTokens for Client {
             gt_token: Some(Default::default()),
             where_clause: Some(WhereClause {
                 where_token: Default::default(),
-                predicates: parse_quote!(
-                    ReadWriteStream: std::io::Read,
-                    for<'a> &'a ReadWriteStream: std::io::Write,
-                ),
+                predicates: parse_quote!(ReadWriteStream: std::io::Read + std::io::Write,),
             }),
         };
 

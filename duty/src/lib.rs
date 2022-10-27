@@ -8,14 +8,11 @@ use std::io::{Read, Write};
 
 pub struct DataStream<S> {
     stream: S,
-    size_buf: Vec<u8>,
-    data_buf: Vec<u8>,
 }
 
 impl<S> DataStream<S>
 where
-    S: Read,
-    for<'a> &'a S: Write,
+    S: Read + Write,
 {
     pub fn new(stream: S) -> DataStream<S> {
         let mut size_buf = Vec::new();
@@ -25,31 +22,17 @@ where
             0,
         );
 
-        DataStream {
-            stream,
-            size_buf,
-            data_buf: Vec::new(),
-        }
+        DataStream { stream }
     }
 
     pub fn receive<T: DeserializeOwned>(&mut self) -> Result<T, Error> {
-        self.stream
-            .read_exact(&mut self.size_buf)
-            .map_err(Error::CannotReadMsgRawData)?;
-        let size: usize =
-            bincode::deserialize(&self.size_buf).map_err(Error::MsgHeaderDeserFailed)?;
-        self.data_buf.resize(size, 0);
-        self.stream
-            .read_exact(&mut self.data_buf)
-            .map_err(Error::CannotReadMsgRawData)?;
-        bincode::deserialize(&self.data_buf).map_err(Error::MsgBoodyDeserFailed)
+        bincode::deserialize_from(&mut self.stream)
+            .map_err(Error::MsgBoodyDeserFailed)
     }
 
-    pub fn send<T: Serialize>(&self, data: &T) -> Result<(), Error> {
-        let size = bincode::serialized_size(&data)
-            .expect("cannot estimate size of bincode-serialized data");
-        bincode::serialize_into(&self.stream, &size).map_err(Error::MsgHeaderSerFailed)?;
-        bincode::serialize_into(&self.stream, &data).map_err(Error::MsgHeaderSerFailed)
+    pub fn send<T: Serialize>(&mut self, data: &T) -> Result<(), Error> {
+        bincode::serialize_into(&mut self.stream, &data)
+            .map_err(Error::MsgHeaderSerFailed)
     }
 
     pub fn send_receive<In: Serialize, Out: DeserializeOwned>(

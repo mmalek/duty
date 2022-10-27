@@ -62,7 +62,9 @@ fn loopback_specific() -> Result<(), Error> {
 
         start.wait();
 
-        let client = CalculatorClient::<_, i32, u32>::new(TcpStream::connect(&ADDR).expect("cannot connect"))?;
+        let client = CalculatorClient::<_, i32, u32>::new(
+            TcpStream::connect(&ADDR).expect("cannot connect"),
+        )?;
         assert_eq!(client.add(2, 3)?, 5);
         assert_eq!(client.add(38, 78)?, 116);
         assert_eq!(client.mul(42, 5)?, 210);
