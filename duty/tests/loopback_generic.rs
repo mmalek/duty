@@ -1,5 +1,5 @@
 use duty::error::Error;
-use duty::{service, DataStream};
+use duty::{service, transport};
 use serde::{de::DeserializeOwned, Serialize};
 use std::net::{TcpListener, TcpStream};
 use std::ops::{Add, Mul};
@@ -36,7 +36,7 @@ impl Calculator<i32, u32> for CalculatorServer {
 }
 
 #[test]
-fn loopback_specific() -> Result<(), Error> {
+fn loopback_generic() -> Result<(), Error> {
     const ADDR: &str = "127.0.0.1:34564";
 
     let start = Barrier::new(2);
@@ -46,7 +46,7 @@ fn loopback_specific() -> Result<(), Error> {
             let listener = TcpListener::bind(&ADDR).expect("cannot open port");
             start.wait();
             let mut connections = listener.incoming();
-            let mut stream = DataStream::new(
+            let mut transport = transport::Bincode::new(
                 connections
                     .next()
                     .expect("no connections")
@@ -55,16 +55,15 @@ fn loopback_specific() -> Result<(), Error> {
 
             let mut server = CalculatorServer;
             for _ in 0..6 {
-                server.handle_next_request(&mut stream)?;
+                server.handle_next_request(&mut transport)?;
             }
             Ok(())
         });
 
         start.wait();
 
-        let client = CalculatorClient::<_, i32, u32>::new(
-            TcpStream::connect(&ADDR).expect("cannot connect"),
-        )?;
+        let transport = transport::Bincode::new(TcpStream::connect(&ADDR).expect("cannot connect"));
+        let client = CalculatorClient::<_, i32, u32>::new(transport)?;
         assert_eq!(client.add(2, 3)?, 5);
         assert_eq!(client.add(38, 78)?, 116);
         assert_eq!(client.mul(42, 5)?, 210);

@@ -78,14 +78,14 @@ impl Service {
 
         let handle_next_request_method = parse_quote! {
             /// Waits for the next request and calls appropriate trait method
-            fn handle_next_request<ReadWriteStream>(#receiver, stream: &mut duty::DataStream<ReadWriteStream>) -> Result<(), duty::Error>
+            fn handle_next_request<Transport>(#receiver, transport: &mut Transport) -> Result<(), duty::Error>
             where
-                ReadWriteStream: std::io::Read + std::io::Write,
+            Transport: duty::Transport,
             {
-                let request: #req_enum_path = stream.receive()?;
+                let request: #req_enum_path = transport.receive()?;
                 match request {
                     #(
-                        #req_enum_variants { #( #args ),* } => stream.send(&Self::#methods(#method_call_args)),
+                        #req_enum_variants { #( #args ),* } => transport.send(&Self::#methods(#method_call_args)),
                     )*
                 }
             }
@@ -252,11 +252,11 @@ impl ToTokens for Client {
 
         let mut generics = Generics {
             lt_token: Some(Default::default()),
-            params: iter::once::<GenericParam>(parse_quote!(ReadWriteStream)).collect(),
+            params: iter::once::<GenericParam>(parse_quote!(Transport)).collect(),
             gt_token: Some(Default::default()),
             where_clause: Some(WhereClause {
                 where_token: Default::default(),
-                predicates: parse_quote!(ReadWriteStream: std::io::Read + std::io::Write,),
+                predicates: parse_quote!(Transport: duty::Transport,),
             }),
         };
 
@@ -278,15 +278,16 @@ impl ToTokens for Client {
 
         output.extend(quote!(
             #vis struct #ident #ty_generics {
-                stream: std::cell::RefCell<duty::DataStream<ReadWriteStream>>,
+                transport: std::cell::RefCell<Transport>,
                 phantom: std::marker::PhantomData<(#gen_args)>,
             }
 
             impl #impl_generics #ident #ty_generics #where_clause {
-                #vis fn new(stream: ReadWriteStream) -> std::result::Result<Self, duty::Error> {
-                    let stream = duty::DataStream::new(stream);
-                    let stream = std::cell::RefCell::new(stream);
-                    Ok(Self { stream, phantom: std::marker::PhantomData {} })
+                #vis fn new(transport: Transport) -> std::result::Result<Self, duty::Error> {
+                    Ok(Self {
+                        transport: std::cell::RefCell::new(transport),
+                        phantom: std::marker::PhantomData {}
+                    })
                 }
 
                 #(
@@ -325,7 +326,7 @@ impl ToTokens for ClientMethod {
 
         output.extend(quote!(
             #vis fn #ident (&self #(, #args)* ) -> Result<#ret_type, duty::Error> {
-                self.stream
+                self.transport
                     .borrow_mut()
                     .send_receive(& #req_variant {#( #req_fields, )*})
             }

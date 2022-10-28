@@ -1,5 +1,5 @@
 use duty::error::Error;
-use duty::{service, DataStream};
+use duty::{service, transport};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Barrier;
 
@@ -37,7 +37,7 @@ fn loopback_specific() -> Result<(), Error> {
             let listener = TcpListener::bind(&ADDR).expect("cannot open port");
             start.wait();
             let mut connections = listener.incoming();
-            let mut stream = DataStream::new(
+            let mut transport = transport::Bincode::new(
                 connections
                     .next()
                     .expect("no connections")
@@ -46,14 +46,15 @@ fn loopback_specific() -> Result<(), Error> {
 
             let server = LogicServiceServer;
             for _ in 0..9 {
-                server.handle_next_request(&mut stream)?;
+                server.handle_next_request(&mut transport)?;
             }
             Ok(())
         });
 
         start.wait();
 
-        let client = LogicServiceClient::new(TcpStream::connect(&ADDR).expect("cannot connect"))?;
+        let transport = transport::Bincode::new(TcpStream::connect(&ADDR).expect("cannot connect"));
+        let client = LogicServiceClient::new(transport)?;
         assert_eq!(client.and(true, true)?, true);
         assert_eq!(client.and(false, true)?, false);
         assert_eq!(client.and(true, false)?, false);

@@ -18,4 +18,6 @@ pub enum Error {
     IncomingConnectionError(#[source] io::Error),
     #[error("outgoing connection error")]
     OutgoingConnectionError(#[source] io::Error),
+    #[error("SSH connection error")]
+    SshConnectionError(#[source] ssh2::Error),
 }
