@@ -1,4 +1,5 @@
-use duty::{transport::Bincode, ReadWrite};
+use duty::transport::Bincode;
+use readwrite::ReadWrite;
 use std::error::Error;
 
 mod ttv_calc;
