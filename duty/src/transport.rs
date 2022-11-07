@@ -20,10 +20,7 @@ pub struct Bincode<S> {
     stream: S,
 }
 
-impl<S> Bincode<S>
-where
-    S: Read + Write,
-{
+impl<S> Bincode<S> {
     pub fn new(stream: S) -> Bincode<S> {
         Bincode { stream }
     }
@@ -45,10 +42,7 @@ pub struct Json<S> {
     stream: S,
 }
 
-impl<S> Json<S>
-where
-    S: Read + Write,
-{
+impl<S> Json<S> {
     pub fn new(stream: S) -> Json<S> {
         Json { stream }
     }
