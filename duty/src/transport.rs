@@ -31,14 +31,36 @@ where
 
 impl<S: Read + Write> Transport for Bincode<S> {
     fn receive<T: DeserializeOwned>(&mut self) -> Result<T, Error> {
-        let mut deserializer =
-            bincode::Deserializer::with_reader(&mut self.stream, bincode::DefaultOptions::new());
-        serde::Deserialize::deserialize(&mut deserializer).map_err(Error::MsgBoodyDeserFailed)
+        bincode::deserialize_from(&mut self.stream)
+            .map_err(|e| Error::MsgDeserFailed(e.to_string()))
     }
 
     fn send<T: Serialize>(&mut self, data: &T) -> Result<(), Error> {
-        let mut serializer =
-            bincode::Serializer::new(&mut self.stream, bincode::DefaultOptions::new());
-        serde::Serialize::serialize(&data, &mut serializer).map_err(Error::MsgHeaderSerFailed)
+        bincode::serialize_into(&mut self.stream, data)
+            .map_err(|e| Error::MsgSerFailed(e.to_string()))
+    }
+}
+
+pub struct Json<S> {
+    stream: S,
+}
+
+impl<S> Json<S>
+where
+    S: Read + Write,
+{
+    pub fn new(stream: S) -> Json<S> {
+        Json { stream }
+    }
+}
+
+impl<S: Read + Write> Transport for Json<S> {
+    fn receive<T: DeserializeOwned>(&mut self) -> Result<T, Error> {
+        serde_json::from_reader(&mut self.stream).map_err(|e| Error::MsgDeserFailed(e.to_string()))
+    }
+
+    fn send<T: Serialize>(&mut self, data: &T) -> Result<(), Error> {
+        serde_json::to_writer(&mut self.stream, data)
+            .map_err(|e| Error::MsgSerFailed(e.to_string()))
     }
 }
