@@ -1,6 +1,5 @@
 pub mod error;
 pub mod readwrite;
-pub mod ssh;
 pub mod transport;
 
 pub use crate::error::Error;
