@@ -8,7 +8,7 @@ mod ttv_calc;
 use ttv_calc::TtvCalcClient;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let (_sess, channel) = execute("myserver", "mmalek", "ssh_worker", None)?;
+    let (_sess, channel) = execute("myserver", "mmalek", "local_worker", None)?;
 
     let client = TtvCalcClient::new(Bincode::new(channel))?;
 

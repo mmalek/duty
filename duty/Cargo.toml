@@ -19,6 +19,12 @@ readwrite = "0.2"
 ssh2 = "0.9"
 
 [[example]]
+name = "local_client"
+
+[[example]]
+name = "local_worker"
+
+[[example]]
 name = "tcp_client"
 
 [[example]]
@@ -26,6 +32,3 @@ name = "tcp_server"
 
 [[example]]
 name = "ssh_client"
-
-[[example]]
-name = "ssh_worker"
