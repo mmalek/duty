@@ -1,4 +1,5 @@
 use std::io::{self, Read, Write};
+use std::io::{Stdin, Stdout};
 use std::sync::mpsc::{channel, Receiver, RecvError, SendError, Sender};
 
 pub struct MpscStream {
@@ -60,5 +61,35 @@ impl Write for MpscStream {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+pub struct Stdinout {
+    stdin: Stdin,
+    stdout: Stdout,
+}
+
+impl Stdinout {
+    pub fn new() -> Stdinout {
+        Stdinout {
+            stdin: std::io::stdin(),
+            stdout: std::io::stdout(),
+        }
+    }
+}
+
+impl Read for Stdinout {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.stdin.read(buf)
+    }
+}
+
+impl Write for Stdinout {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.stdout.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stdout.flush()
     }
 }
