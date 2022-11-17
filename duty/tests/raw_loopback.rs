@@ -1,9 +1,8 @@
 use duty::client::Client;
 use duty::error::Error;
 use duty::procedure::Procedure;
+use duty::stream::MpscStream;
 use duty::{transport, Transport};
-use std::net::{TcpListener, TcpStream};
-use std::sync::Barrier;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct AndProc {
@@ -55,44 +54,33 @@ impl From<OrProc> for LogicRequest {
 
 #[test]
 fn raw_loopback() -> Result<(), Error> {
-    const ADDR: &str = "127.0.0.1:34664";
-
-    let start = Barrier::new(2);
-
     std::thread::scope(|s| {
+        let (client_stream, server_stream) = MpscStream::new_pair();
+
         s.spawn(|| -> Result<(), Error> {
-            let listener = TcpListener::bind(&ADDR).expect("cannot open port");
-            start.wait();
-            let mut connections = listener.incoming();
-            let mut transport = transport::Bincode::new(
-                connections
-                    .next()
-                    .expect("no connections")
-                    .expect("no stream"),
-            );
+            let mut transport = transport::Bincode::new(server_stream);
 
             for _ in 0..9 {
                 match transport.receive()? {
-                    LogicRequest::And(p) => p.a && p.b,
-                    LogicRequest::Or(p) => p.a || p.b,
+                    LogicRequest::And(p) => p.respond(&mut transport, p.a && p.b)?,
+                    LogicRequest::Or(p) => transport.send(&p.map(|p| p.a || p.b))?,
                 };
             }
             Ok(())
         });
 
-        start.wait();
-
-        let transport = transport::Bincode::new(TcpStream::connect(&ADDR).expect("cannot connect"));
+        let transport = transport::Bincode::new(client_stream);
         let mut client = Client::new(transport);
-        assert_eq!(client.call(AndProc { a: true, b: true }).get()?, true);
-        // assert_eq!(client.call(AndProc { a: false, b: true }).get()?, false);
-        // assert_eq!(client.call(AndProc { a: true, b: false }).get()?, false);
-        // assert_eq!(client.call(AndProc { a: false, b: false }).get()?, false);
 
-        // assert_eq!(client.call(OrProc { a: true, b: true }).get()?, true);
-        // assert_eq!(client.call(OrProc { a: false, b: true }).get()?, true);
-        // assert_eq!(client.call(OrProc { a: true, b: false }).get()?, true);
-        // assert_eq!(client.call(OrProc { a: false, b: false }).get()?, false);
+        assert_eq!(client.call(AndProc { a: true, b: true }).get()?, true);
+        assert_eq!(client.call(AndProc { a: false, b: true }).get()?, false);
+        assert_eq!(client.call(AndProc { a: true, b: false }).get()?, false);
+        assert_eq!(client.call(AndProc { a: false, b: false }).get()?, false);
+
+        assert_eq!(client.call(OrProc { a: true, b: true }).get()?, true);
+        assert_eq!(client.call(OrProc { a: false, b: true }).get()?, true);
+        assert_eq!(client.call(OrProc { a: true, b: false }).get()?, true);
+        assert_eq!(client.call(OrProc { a: false, b: false }).get()?, false);
 
         Ok(())
     })

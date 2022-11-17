@@ -1,9 +1,8 @@
 use duty::error::Error;
+use duty::stream::MpscStream;
 use duty::{service, transport};
 use serde::{de::DeserializeOwned, Serialize};
-use std::net::{TcpListener, TcpStream};
 use std::ops::{Add, Mul};
-use std::sync::Barrier;
 
 #[service]
 pub trait Calculator<A, M>
@@ -37,21 +36,11 @@ impl Calculator<i32, u32> for CalculatorServer {
 
 #[test]
 fn loopback_generic() -> Result<(), Error> {
-    const ADDR: &str = "127.0.0.1:34564";
-
-    let start = Barrier::new(2);
-
     std::thread::scope(|s| {
+        let (client_stream, server_stream) = MpscStream::new_pair();
+
         s.spawn(|| -> Result<(), Error> {
-            let listener = TcpListener::bind(&ADDR).expect("cannot open port");
-            start.wait();
-            let mut connections = listener.incoming();
-            let mut transport = transport::Bincode::new(
-                connections
-                    .next()
-                    .expect("no connections")
-                    .expect("no stream"),
-            );
+            let mut transport = transport::Bincode::new(server_stream);
 
             let mut server = CalculatorServer;
             for _ in 0..6 {
@@ -60,10 +49,9 @@ fn loopback_generic() -> Result<(), Error> {
             Ok(())
         });
 
-        start.wait();
-
-        let transport = transport::Bincode::new(TcpStream::connect(&ADDR).expect("cannot connect"));
+        let transport = transport::Bincode::new(client_stream);
         let client = CalculatorClient::<_, i32, u32>::new(transport)?;
+
         assert_eq!(client.add(2, 3)?, 5);
         assert_eq!(client.add(38, 78)?, 116);
         assert_eq!(client.mul(42, 5)?, 210);

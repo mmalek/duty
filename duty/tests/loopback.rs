@@ -1,7 +1,6 @@
 use duty::error::Error;
+use duty::stream::MpscStream;
 use duty::{service, transport};
-use std::net::{TcpListener, TcpStream};
-use std::sync::Barrier;
 
 #[service]
 trait LogicService {
@@ -27,22 +26,12 @@ impl LogicService for LogicServiceServer {
 }
 
 #[test]
-fn loopback_specific() -> Result<(), Error> {
-    const ADDR: &str = "127.0.0.1:34564";
-
-    let start = Barrier::new(2);
-
+fn loopback() -> Result<(), Error> {
     std::thread::scope(|s| {
+        let (client_stream, server_stream) = MpscStream::new_pair();
+
         s.spawn(|| -> Result<(), Error> {
-            let listener = TcpListener::bind(&ADDR).expect("cannot open port");
-            start.wait();
-            let mut connections = listener.incoming();
-            let mut transport = transport::Bincode::new(
-                connections
-                    .next()
-                    .expect("no connections")
-                    .expect("no stream"),
-            );
+            let mut transport = transport::Bincode::new(server_stream);
 
             let server = LogicServiceServer;
             for _ in 0..9 {
@@ -51,10 +40,9 @@ fn loopback_specific() -> Result<(), Error> {
             Ok(())
         });
 
-        start.wait();
-
-        let transport = transport::Bincode::new(TcpStream::connect(&ADDR).expect("cannot connect"));
+        let transport = transport::Bincode::new(client_stream);
         let client = LogicServiceClient::new(transport)?;
+
         assert_eq!(client.and(true, true)?, true);
         assert_eq!(client.and(false, true)?, false);
         assert_eq!(client.and(true, false)?, false);
