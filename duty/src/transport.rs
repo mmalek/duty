@@ -2,7 +2,7 @@ use crate::error::Error;
 use serde::{de::DeserializeOwned, Serialize};
 use std::io::{Read, Write};
 
-pub trait Transport {
+pub trait Transport: Send + 'static {
     fn receive<T: DeserializeOwned>(&mut self) -> Result<T, Error>;
 
     fn send<T: Serialize>(&mut self, data: &T) -> Result<(), Error>;
@@ -26,7 +26,7 @@ impl<S> Bincode<S> {
     }
 }
 
-impl<S: Read + Write> Transport for Bincode<S> {
+impl<S: Read + Write + Send + 'static> Transport for Bincode<S> {
     fn receive<T: DeserializeOwned>(&mut self) -> Result<T, Error> {
         bincode::deserialize_from(&mut self.stream)
             .map_err(|e| Error::MsgDeserFailed(e.to_string()))
@@ -48,7 +48,7 @@ impl<S> Json<S> {
     }
 }
 
-impl<S: Read + Write> Transport for Json<S> {
+impl<S: Read + Write + Send + 'static> Transport for Json<S> {
     fn receive<T: DeserializeOwned>(&mut self) -> Result<T, Error> {
         serde_json::from_reader(&mut self.stream).map_err(|e| Error::MsgDeserFailed(e.to_string()))
     }
