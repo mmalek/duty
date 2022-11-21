@@ -1,27 +1,10 @@
-use crate::error::Error;
-use crate::transport::Transport;
 use serde::{de::DeserializeOwned, Serialize};
 
 pub trait Procedure: Clone + Sized {
     type Response: Serialize + DeserializeOwned + Send + 'static;
     type Request: Serialize + DeserializeOwned + From<Self> + Send + 'static;
 
-    fn map<F>(&self, f: F) -> Self::Response
-    where
-        F: FnOnce(&Self) -> Self::Response,
-    {
-        f(self)
-    }
-
     fn reduce(a: Self::Response, b: Self::Response) -> Self::Response;
-
-    fn respond<T: Transport>(
-        &self,
-        transport: &mut T,
-        response: Self::Response,
-    ) -> Result<(), Error> {
-        transport.send(&response)
-    }
 }
 
 #[cfg(test)]

@@ -8,6 +8,12 @@ pub struct Dispatcher<T: Transport> {
 }
 
 impl<T: Transport> Dispatcher<T> {
+    pub fn new(transports: impl IntoIterator<Item = T>) -> Dispatcher<T> {
+        Dispatcher {
+            clients: transports.into_iter().map(Client::new).collect(),
+        }
+    }
+
     pub fn call<P: Procedure>(&mut self, proc: &P) -> DispatchHandle<P> {
         let call_handlers = self
             .clients
@@ -16,14 +22,6 @@ impl<T: Transport> Dispatcher<T> {
             .collect();
 
         DispatchHandle { call_handlers }
-    }
-}
-
-impl<T: Transport> From<Vec<T>> for Dispatcher<T> {
-    fn from(t: Vec<T>) -> Dispatcher<T> {
-        Dispatcher {
-            clients: t.into_iter().map(Client::new).collect(),
-        }
     }
 }
 

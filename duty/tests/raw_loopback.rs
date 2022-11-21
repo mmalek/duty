@@ -1,8 +1,9 @@
 use duty::dispatcher::Dispatcher;
 use duty::error::Error;
 use duty::procedure::Procedure;
+use duty::server::Server;
 use duty::stream::MpscStream;
-use duty::{transport, Transport};
+use duty::transport;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct AndProc {
@@ -61,12 +62,14 @@ fn raw_loopback() -> Result<(), Error> {
             let (client_stream, server_stream) = MpscStream::new_pair();
 
             s.spawn(|| -> Result<(), Error> {
-                let mut transport = transport::Bincode::new(server_stream);
+                let transport = transport::Bincode::new(server_stream);
+                let mut server = Server::new(transport);
 
                 for _ in 0..9 {
-                    match transport.receive()? {
-                        LogicRequest::And(p) => p.respond(&mut transport, p.a && p.b)?,
-                        LogicRequest::Or(p) => transport.send(&p.map(|p| p.a || p.b))?,
+                    let (request, handle) = server.next()?;
+                    match request {
+                        LogicRequest::And(p) => handle.respond(&p, &(p.a && p.b))?,
+                        LogicRequest::Or(p) => handle.respond(&p, &(p.a || p.b))?,
                     };
                 }
                 Ok(())
@@ -75,7 +78,7 @@ fn raw_loopback() -> Result<(), Error> {
             transports.push(transport::Bincode::new(client_stream));
         }
 
-        let mut client: Dispatcher<_> = transports.into();
+        let mut client = Dispatcher::new(transports);
 
         assert_eq!(client.call(&AndProc { a: true, b: true }).get()?, true);
         assert_eq!(client.call(&AndProc { a: false, b: true }).get()?, false);

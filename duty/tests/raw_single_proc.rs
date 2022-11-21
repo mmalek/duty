@@ -1,8 +1,9 @@
 use duty::dispatcher::Dispatcher;
 use duty::error::Error;
 use duty::procedure::Procedure;
+use duty::server::Server;
 use duty::stream::MpscStream;
-use duty::{transport, Transport};
+use duty::transport;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct AndProc {
@@ -28,11 +29,13 @@ fn raw_single_proc() -> Result<(), Error> {
             let (client_stream, server_stream) = MpscStream::new_pair();
 
             s.spawn(|| -> Result<(), Error> {
-                let mut transport = transport::Bincode::new(server_stream);
+                let transport = transport::Bincode::new(server_stream);
+                let mut server = Server::<_, AndProc>::new(transport);
 
                 for _ in 0..9 {
-                    let p: AndProc = transport.receive()?;
-                    p.respond(&mut transport, p.a && p.b)?;
+                    let (p, handle) = server.next()?;
+                    let response = p.a && p.b;
+                    handle.respond(&p, &response)?;
                 }
                 Ok(())
             });
@@ -40,7 +43,7 @@ fn raw_single_proc() -> Result<(), Error> {
             transports.push(transport::Bincode::new(client_stream));
         }
 
-        let mut client: Dispatcher<_> = transports.into();
+        let mut client = Dispatcher::new(transports);
 
         assert_eq!(client.call(&AndProc { a: true, b: true }).get()?, true);
         assert_eq!(client.call(&AndProc { a: false, b: true }).get()?, false);
